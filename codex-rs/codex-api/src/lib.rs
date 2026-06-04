@@ -29,6 +29,8 @@ pub use crate::auth::auth_header_telemetry;
 pub use crate::common::CompactionInput;
 pub use crate::common::MemorySummarizeInput;
 pub use crate::common::MemorySummarizeOutput;
+pub use crate::common::ModelApiHttpRequest;
+pub use crate::common::ModelApiResponseMapper;
 pub use crate::common::OpenAiVerbosity;
 pub use crate::common::RawMemory;
 pub use crate::common::RawMemoryMetadata;

@@ -39,6 +39,8 @@ use codex_api::Compression;
 use codex_api::MemoriesClient as ApiMemoriesClient;
 use codex_api::MemorySummarizeInput as ApiMemorySummarizeInput;
 use codex_api::MemorySummarizeOutput as ApiMemorySummarizeOutput;
+use codex_api::ModelApiHttpRequest as ApiModelApiHttpRequest;
+use codex_api::ModelApiResponseMapper as ApiModelApiResponseMapper;
 use codex_api::Provider as ApiProvider;
 use codex_api::RawMemory as ApiRawMemory;
 use codex_api::RealtimeCallClient as ApiRealtimeCallClient;
@@ -133,6 +135,12 @@ use codex_response_debug_context::extract_response_debug_context;
 use codex_response_debug_context::extract_response_debug_context_from_api_error;
 use codex_response_debug_context::telemetry_api_error_message;
 use codex_response_debug_context::telemetry_transport_error_message;
+use codex_runtime_api::ContextAssemblyObserverInput;
+use codex_runtime_api::ModelApiKind;
+use codex_runtime_api::ModelApiRequest;
+use codex_runtime_api::ModelRequestAdapterInput;
+use codex_runtime_api::ProtocolResponseMapperKind;
+use codex_runtime_api::RuntimeRegistry;
 
 pub const OPENAI_BETA_HEADER: &str = "OpenAI-Beta";
 pub const X_CODEX_INSTALLATION_ID_HEADER: &str = "x-codex-installation-id";
@@ -203,6 +211,7 @@ struct ModelClientState {
     include_timing_metrics: bool,
     beta_features_header: Option<String>,
     item_ids_enabled: bool,
+    runtime_registry: RuntimeRegistry,
     include_attestation: bool,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
     disable_websockets: AtomicBool,
@@ -409,6 +418,7 @@ impl ModelClient {
         include_timing_metrics: bool,
         beta_features_header: Option<String>,
         item_ids_enabled: bool,
+        runtime_registry: RuntimeRegistry,
         attestation_provider: Option<Arc<dyn AttestationProvider>>,
     ) -> Self {
         let model_provider = create_model_provider(provider_info, auth_manager);
@@ -431,6 +441,7 @@ impl ModelClient {
                 include_timing_metrics,
                 beta_features_header,
                 item_ids_enabled,
+                runtime_registry,
                 include_attestation,
                 attestation_provider,
                 disable_websockets: AtomicBool::new(false),
@@ -544,7 +555,7 @@ impl ModelClient {
             RequestRouteTelemetry::for_endpoint(RESPONSES_COMPACT_ENDPOINT),
             self.state.auth_env_telemetry.clone(),
         );
-        let request = self.build_responses_request(
+        let request = self.build_stock_responses_request(
             &client_setup.api_provider,
             prompt,
             model_info,
@@ -809,7 +820,7 @@ impl ModelClient {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn build_responses_request(
+    fn build_stock_responses_request(
         &self,
         provider: &codex_api::Provider,
         prompt: &Prompt,
@@ -899,6 +910,143 @@ impl ModelClient {
         for item in input {
             item.set_id(/*new_id*/ None);
         }
+    }
+
+    pub(crate) async fn build_model_api_request(
+        &self,
+        provider: &codex_api::Provider,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> Result<ModelApiRequest> {
+        let stock_request = self.build_stock_responses_request(
+            provider,
+            prompt,
+            model_info,
+            effort,
+            summary,
+            service_tier,
+            responses_metadata,
+        )?;
+        let body = serde_json::to_value(&stock_request).map_err(|error| {
+            CodexErr::InvalidRequest(format!(
+                "failed to serialize stock model request for runtime adapter: {error}"
+            ))
+        })?;
+        let provider_bound_input = serde_json::to_value(&stock_request.input).map_err(|error| {
+            CodexErr::InvalidRequest(format!(
+                "failed to serialize model input for runtime adapter: {error}"
+            ))
+        })?;
+        self.state
+            .runtime_registry
+            .observe_context(ContextAssemblyObserverInput {
+                provider_bound_input: provider_bound_input.clone(),
+                metadata: HashMap::new().into_iter().collect(),
+            })
+            .await
+            .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+        let tools = serde_json::to_value(&stock_request.tools).map_err(|error| {
+            CodexErr::InvalidRequest(format!(
+                "failed to serialize tools for runtime adapter: {error}"
+            ))
+        })?;
+        let input = ModelRequestAdapterInput {
+            provider: provider.name.clone(),
+            model: stock_request.model.clone(),
+            api_kind: ModelApiKind::Responses,
+            body,
+            instructions: stock_request.instructions.clone(),
+            input: provider_bound_input,
+            tools,
+            parallel_tool_calls: stock_request.parallel_tool_calls,
+            metadata: HashMap::new().into_iter().collect(),
+        };
+        self.state
+            .runtime_registry
+            .build_model_request(input)
+            .await
+            .map_err(|error| CodexErr::InvalidRequest(error.to_string()))
+    }
+
+    async fn build_runtime_responses_request(
+        &self,
+        provider: &codex_api::Provider,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> Result<ResponsesApiRequest> {
+        let request = self
+            .build_model_api_request(
+                provider,
+                prompt,
+                model_info,
+                effort,
+                summary,
+                service_tier,
+                responses_metadata,
+            )
+            .await?;
+        if request.api_kind != ModelApiKind::Responses
+            || request.response_mapper != ProtocolResponseMapperKind::Responses
+        {
+            return Err(CodexErr::InvalidRequest(format!(
+                "runtime model request adapter returned unsupported api kind {:?} with mapper {:?}; only Responses is wired to the current transport",
+                request.api_kind, request.response_mapper
+            )));
+        }
+        serde_json::from_value(request.body).map_err(|error| {
+            CodexErr::InvalidRequest(format!(
+                "runtime model request adapter returned invalid Responses request body: {error}"
+            ))
+        })
+    }
+
+    async fn build_runtime_model_api_request(
+        &self,
+        provider: &codex_api::Provider,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+    ) -> Result<ApiModelApiHttpRequest> {
+        let request = self
+            .build_model_api_request(
+                provider,
+                prompt,
+                model_info,
+                effort,
+                summary,
+                service_tier,
+                responses_metadata,
+            )
+            .await?;
+        let response_mapper = match request.response_mapper {
+            ProtocolResponseMapperKind::Responses => ApiModelApiResponseMapper::Responses,
+            ProtocolResponseMapperKind::ChatCompletions => {
+                ApiModelApiResponseMapper::ChatCompletions
+            }
+            ProtocolResponseMapperKind::Messages | ProtocolResponseMapperKind::Custom(_) => {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "runtime model request adapter returned unsupported response mapper {:?}",
+                    request.response_mapper
+                )));
+            }
+        };
+
+        Ok(ApiModelApiHttpRequest {
+            endpoint_path: request.endpoint_path,
+            body: request.body,
+            response_mapper,
+        })
     }
 
     /// Returns whether the Responses-over-WebSocket transport is active for this session.
@@ -1394,20 +1542,40 @@ impl ModelClientSession {
                 )
                 .await;
 
-            let mut request = self.client.build_responses_request(
-                &client_setup.api_provider,
-                prompt,
-                model_info,
-                effort.clone(),
-                summary,
-                service_tier.clone(),
-                responses_metadata,
-            )?;
-            let store = request.store;
-            self.client
-                .prepare_response_items_for_request(&mut request.input, store);
-            let request_session_telemetry =
-                session_telemetry_for_request(session_telemetry, &request);
+            let mut request = self
+                .client
+                .build_runtime_model_api_request(
+                    &client_setup.api_provider,
+                    prompt,
+                    model_info,
+                    effort.clone(),
+                    summary,
+                    service_tier.clone(),
+                    responses_metadata,
+                )
+                .await?;
+            let request_session_telemetry = if request.response_mapper
+                == ApiModelApiResponseMapper::Responses
+                && request.endpoint_path == "responses"
+            {
+                let mut responses_request: ResponsesApiRequest =
+                    serde_json::from_value(request.body.clone()).map_err(|error| {
+                        CodexErr::InvalidRequest(format!(
+                            "runtime model request adapter returned invalid Responses request body: {error}"
+                        ))
+                    })?;
+                let store = responses_request.store;
+                self.client
+                    .prepare_response_items_for_request(&mut responses_request.input, store);
+                request.body = serde_json::to_value(&responses_request).map_err(|error| {
+                    CodexErr::InvalidRequest(format!(
+                        "failed to serialize prepared Responses request body: {error}"
+                    ))
+                })?;
+                session_telemetry_for_request(session_telemetry, &responses_request)
+            } else {
+                session_telemetry.clone()
+            };
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.add_request_headers(&mut options.extra_headers);
             inference_trace_attempt.record_started(&request);
@@ -1417,7 +1585,19 @@ impl ModelClientSession {
                 client_setup.api_auth,
             )
             .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
-            let stream_result = client.stream_request(request, options).await;
+            let stream_result = if request.response_mapper == ApiModelApiResponseMapper::Responses
+                && request.endpoint_path == "responses"
+            {
+                let responses_request =
+                    serde_json::from_value(request.body.clone()).map_err(|error| {
+                        CodexErr::InvalidRequest(format!(
+                            "runtime model request adapter returned invalid Responses request body: {error}"
+                        ))
+                    })?;
+                client.stream_request(responses_request, options).await
+            } else {
+                client.stream_model_api_request(request, options).await
+            };
 
             match stream_result {
                 Ok(stream) => {
@@ -1507,15 +1687,18 @@ impl ModelClientSession {
                 client_setup.agent_identity_telemetry.clone(),
                 pending_retry,
             );
-            let request = self.client.build_responses_request(
-                &client_setup.api_provider,
-                prompt,
-                model_info,
-                effort.clone(),
-                summary,
-                service_tier.clone(),
-                responses_metadata,
-            )?;
+            let request = self
+                .client
+                .build_runtime_responses_request(
+                    &client_setup.api_provider,
+                    prompt,
+                    model_info,
+                    effort.clone(),
+                    summary,
+                    service_tier.clone(),
+                    responses_metadata,
+                )
+                .await?;
             let request_session_telemetry = if warmup {
                 // `generate=false` prewarm is connection setup, not an inference request.
                 session_telemetry.clone()
@@ -1745,7 +1928,14 @@ impl ModelClientSession {
         let wire_api = self.client.state.provider.info().wire_api;
         match wire_api {
             WireApi::Responses => {
-                if self.client.responses_websocket_enabled() {
+                let uses_default_request_adapter = self
+                    .client
+                    .state
+                    .runtime_registry
+                    .model_request_adapter_id()
+                    .as_str()
+                    == "codex.default.model_request_adapter";
+                if uses_default_request_adapter && self.client.responses_websocket_enabled() {
                     let request_trace = current_span_w3c_trace_context();
                     match self
                         .stream_responses_websocket(
@@ -1958,6 +2148,7 @@ where
                 Ok(ResponseEvent::Completed {
                     response_id,
                     token_usage,
+                    raw_provider_metadata,
                     end_turn,
                 }) => {
                     feedback_tags!(last_model_response_id = &response_id);
@@ -1987,6 +2178,7 @@ where
                         .send(Ok(ResponseEvent::Completed {
                             response_id,
                             token_usage,
+                            raw_provider_metadata,
                             end_turn,
                         }))
                         .await

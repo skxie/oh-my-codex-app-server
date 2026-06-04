@@ -34,6 +34,7 @@ use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::auth::AuthMode;
+use codex_protocol::error::CodexErr;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
@@ -50,6 +51,18 @@ use codex_rollout_trace::RawTraceEventPayload;
 use codex_rollout_trace::RolloutTrace;
 use codex_rollout_trace::TraceWriter;
 use codex_rollout_trace::replay_bundle;
+use codex_runtime_api::ContextAssemblyObserver;
+use codex_runtime_api::ContextAssemblyObserverId;
+use codex_runtime_api::ContextAssemblyObserverInput;
+use codex_runtime_api::ContextError;
+use codex_runtime_api::ModelApiKind;
+use codex_runtime_api::ModelApiRequest;
+use codex_runtime_api::ModelRequestAdapter;
+use codex_runtime_api::ModelRequestAdapterError;
+use codex_runtime_api::ModelRequestAdapterId;
+use codex_runtime_api::ModelRequestAdapterInput;
+use codex_runtime_api::ProtocolResponseMapperKind;
+use codex_runtime_api::RuntimeRegistry;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -103,6 +116,7 @@ fn test_model_client_with_thread_id(
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*item_ids_enabled*/ false,
+        RuntimeRegistry::default(),
         /*attestation_provider*/ None,
     )
 }
@@ -333,6 +347,531 @@ async fn chatgpt_auth_manager(
         auth,
         agent_identity_authapi_base_url,
     )
+}
+
+struct ResponsesBodyMarkerAdapter;
+struct UnsupportedMapperAdapter;
+struct InvalidResponsesBodyAdapter;
+struct ChatCompletionsStreamAdapter;
+#[derive(Default)]
+struct RecordingContextObserver {
+    observed: Arc<Mutex<Vec<serde_json::Value>>>,
+}
+
+impl ModelRequestAdapter for ResponsesBodyMarkerAdapter {
+    fn id(&self) -> ModelRequestAdapterId {
+        ModelRequestAdapterId::new("test.responses_body_marker")
+    }
+
+    async fn build_request(
+        &self,
+        input: ModelRequestAdapterInput,
+    ) -> Result<ModelApiRequest, ModelRequestAdapterError> {
+        let mut body = input.body;
+        body.as_object_mut()
+            .expect("stock request body should be a JSON object")
+            .insert(
+                "client_metadata".to_string(),
+                json!({
+                    "source": "runtime-adapter"
+                }),
+            );
+        Ok(ModelApiRequest {
+            api_kind: ModelApiKind::Responses,
+            endpoint_path: "responses".to_string(),
+            body,
+            response_mapper: ProtocolResponseMapperKind::Responses,
+        })
+    }
+}
+
+impl ModelRequestAdapter for UnsupportedMapperAdapter {
+    fn id(&self) -> ModelRequestAdapterId {
+        ModelRequestAdapterId::new("test.unsupported_mapper")
+    }
+
+    async fn build_request(
+        &self,
+        input: ModelRequestAdapterInput,
+    ) -> Result<ModelApiRequest, ModelRequestAdapterError> {
+        Ok(ModelApiRequest {
+            api_kind: ModelApiKind::Responses,
+            endpoint_path: "responses".to_string(),
+            body: input.body,
+            response_mapper: ProtocolResponseMapperKind::Custom("test.custom".to_string()),
+        })
+    }
+}
+
+impl ModelRequestAdapter for InvalidResponsesBodyAdapter {
+    fn id(&self) -> ModelRequestAdapterId {
+        ModelRequestAdapterId::new("test.invalid_responses_body")
+    }
+
+    async fn build_request(
+        &self,
+        _input: ModelRequestAdapterInput,
+    ) -> Result<ModelApiRequest, ModelRequestAdapterError> {
+        Ok(ModelApiRequest {
+            api_kind: ModelApiKind::Responses,
+            endpoint_path: "responses".to_string(),
+            body: json!({ "not": "a responses request" }),
+            response_mapper: ProtocolResponseMapperKind::Responses,
+        })
+    }
+}
+
+impl ModelRequestAdapter for ChatCompletionsStreamAdapter {
+    fn id(&self) -> ModelRequestAdapterId {
+        ModelRequestAdapterId::new("test.chat_completions_stream")
+    }
+
+    async fn build_request(
+        &self,
+        input: ModelRequestAdapterInput,
+    ) -> Result<ModelApiRequest, ModelRequestAdapterError> {
+        Ok(ModelApiRequest {
+            api_kind: ModelApiKind::ChatCompletions,
+            endpoint_path: "chat/completions".to_string(),
+            body: json!({
+                "model": input.model,
+                "messages": [{
+                    "role": "user",
+                    "content": "hello"
+                }],
+                "stream": true
+            }),
+            response_mapper: ProtocolResponseMapperKind::ChatCompletions,
+        })
+    }
+}
+
+impl ContextAssemblyObserver for RecordingContextObserver {
+    fn id(&self) -> ContextAssemblyObserverId {
+        ContextAssemblyObserverId::new("test.recording_context_observer")
+    }
+
+    async fn observe(&self, input: ContextAssemblyObserverInput) -> Result<(), ContextError> {
+        self.observed
+            .lock()
+            .expect("observer lock should not be poisoned")
+            .push(input.provider_bound_input);
+        Ok(())
+    }
+}
+
+fn test_prompt(text: &str) -> Prompt {
+    Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: text.to_string(),
+            }],
+            phase: None,
+        }],
+        base_instructions: BaseInstructions {
+            text: "Be brief.".to_string(),
+        },
+        parallel_tool_calls: true,
+        ..Prompt::default()
+    }
+}
+
+fn test_model_client_with_registry(registry: RuntimeRegistry, thread_id: ThreadId) -> ModelClient {
+    ModelClient::new(
+        /*auth_manager*/ None,
+        AgentIdentityAuthPolicy::JwtOnly,
+        thread_id,
+        create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses),
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
+        registry,
+        /*attestation_provider*/ None,
+    )
+}
+
+#[tokio::test]
+async fn runtime_model_request_adapter_changes_responses_request_body() {
+    let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses);
+    let api_provider = provider
+        .to_api_provider(/*auth_mode*/ None)
+        .expect("build test API provider");
+    let thread_id = ThreadId::new();
+    let mut builder = RuntimeRegistry::builder();
+    builder
+        .model_request_adapter(ResponsesBodyMarkerAdapter)
+        .expect("register fake request adapter");
+    let model_client = ModelClient::new(
+        /*auth_manager*/ None,
+        AgentIdentityAuthPolicy::JwtOnly,
+        thread_id,
+        provider,
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
+        builder.build(),
+        /*attestation_provider*/ None,
+    );
+    let responses_metadata = test_responses_metadata_for_client(
+        &model_client,
+        /*turn_id*/ None,
+        "test-window".to_string(),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let prompt = Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "hello".to_string(),
+            }],
+            phase: None,
+        }],
+        base_instructions: BaseInstructions {
+            text: "Be brief.".to_string(),
+        },
+        parallel_tool_calls: true,
+        ..Prompt::default()
+    };
+
+    let actual = model_client
+        .build_model_api_request(
+            &api_provider,
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &responses_metadata,
+        )
+        .await
+        .expect("build adapter request");
+
+    let expected = ModelApiRequest {
+        api_kind: ModelApiKind::Responses,
+        endpoint_path: "responses".to_string(),
+        body: json!({
+            "model": "gpt-test",
+            "instructions": "Be brief.",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "hello"
+                }]
+            }],
+            "tools": [],
+            "tool_choice": "auto",
+            "parallel_tool_calls": true,
+            "reasoning": null,
+            "store": false,
+            "stream": true,
+            "include": [],
+            "prompt_cache_key": thread_id.to_string(),
+            "client_metadata": {
+                "source": "runtime-adapter"
+            }
+        }),
+        response_mapper: ProtocolResponseMapperKind::Responses,
+    };
+    assert_eq!(actual, expected);
+}
+
+#[tokio::test]
+async fn runtime_model_request_adapter_streams_chat_completions_mapper() {
+    let server = wiremock::MockServer::start().await;
+    let body = concat!(
+        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"content\":\"from fake \"},\"finish_reason\":null}],\"usage\":null}\n\n",
+        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"content\":\"request adapter\"},\"finish_reason\":null}],\"usage\":null}\n\n",
+        "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":11,\"prompt_tokens_details\":{\"cached_tokens\":3},\"completion_tokens\":7,\"completion_tokens_details\":{\"reasoning_tokens\":5},\"total_tokens\":18}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(body),
+        )
+        .mount(&server)
+        .await;
+
+    let thread_id = ThreadId::new();
+    let mut builder = RuntimeRegistry::builder();
+    builder
+        .model_request_adapter(ChatCompletionsStreamAdapter)
+        .expect("register chat completions adapter");
+    let model_client = ModelClient::new(
+        /*auth_manager*/ None,
+        AgentIdentityAuthPolicy::JwtOnly,
+        thread_id,
+        create_oss_provider_with_base_url(&format!("{}/v1", server.uri()), WireApi::Responses),
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
+        builder.build(),
+        /*attestation_provider*/ None,
+    );
+    let responses_metadata = test_responses_metadata_for_client(
+        &model_client,
+        /*turn_id*/ None,
+        "test-window".to_string(),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let mut session = model_client.new_session();
+
+    let mut stream = session
+        .stream(
+            &test_prompt("hello"),
+            &test_model_info(),
+            &test_session_telemetry(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &responses_metadata,
+            &InferenceTraceContext::disabled(),
+        )
+        .await
+        .expect("stream chat completions adapter request");
+    let mut text = String::new();
+    let mut completed = None;
+    while let Some(event) = stream.next().await {
+        match event.expect("stream event") {
+            ResponseEvent::OutputTextDelta(delta) => text.push_str(&delta),
+            ResponseEvent::Completed {
+                response_id,
+                token_usage,
+                raw_provider_metadata,
+                end_turn,
+            } => {
+                completed = Some((response_id, token_usage, raw_provider_metadata, end_turn));
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("wiremock should record requests");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url.path(), "/v1/chat/completions");
+    let request_body: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("request body should be JSON");
+    assert_eq!(
+        request_body,
+        json!({
+            "model": "gpt-test",
+            "messages": [{
+                "role": "user",
+                "content": "hello"
+            }],
+            "stream": true
+        })
+    );
+
+    let (response_id, token_usage, raw_provider_metadata, end_turn) =
+        completed.expect("stream should complete");
+    assert_eq!(response_id, "chatcmpl-1");
+    assert_eq!(text, "from fake request adapter");
+    assert_eq!(
+        token_usage,
+        Some(codex_protocol::protocol::TokenUsage {
+            input_tokens: 11,
+            cached_input_tokens: 3,
+            output_tokens: 7,
+            reasoning_output_tokens: 5,
+            total_tokens: 18,
+        })
+    );
+    assert_eq!(end_turn, Some(true));
+    assert_eq!(
+        raw_provider_metadata
+            .expect("raw metadata should be present")
+            .get("usage")
+            .and_then(|usage| usage.get("prompt_tokens"))
+            .and_then(serde_json::Value::as_i64),
+        Some(11)
+    );
+}
+
+#[tokio::test]
+async fn runtime_model_request_adapter_rejects_unsupported_response_mapper() {
+    let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses);
+    let api_provider = provider
+        .to_api_provider(/*auth_mode*/ None)
+        .expect("build test API provider");
+    let thread_id = ThreadId::new();
+    let mut builder = RuntimeRegistry::builder();
+    builder
+        .model_request_adapter(UnsupportedMapperAdapter)
+        .expect("register unsupported mapper adapter");
+    let model_client = test_model_client_with_registry(builder.build(), thread_id);
+
+    let err = model_client
+        .build_runtime_responses_request(
+            &api_provider,
+            &test_prompt("hello"),
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &test_responses_metadata_for_client(
+                &model_client,
+                /*turn_id*/ None,
+                "test-window".to_string(),
+                /*parent_thread_id*/ None,
+                TestCodexResponsesRequestKind::Turn,
+            ),
+        )
+        .await
+        .expect_err("unsupported mapper should fail");
+
+    match err {
+        CodexErr::InvalidRequest(message) => assert_eq!(
+            message,
+            "runtime model request adapter returned unsupported api kind Responses with mapper Custom(\"test.custom\"); only Responses is wired to the current transport"
+        ),
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[tokio::test]
+async fn runtime_model_request_adapter_rejects_invalid_responses_body() {
+    let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses);
+    let api_provider = provider
+        .to_api_provider(/*auth_mode*/ None)
+        .expect("build test API provider");
+    let thread_id = ThreadId::new();
+    let mut builder = RuntimeRegistry::builder();
+    builder
+        .model_request_adapter(InvalidResponsesBodyAdapter)
+        .expect("register invalid body adapter");
+    let model_client = test_model_client_with_registry(builder.build(), thread_id);
+
+    let err = model_client
+        .build_runtime_responses_request(
+            &api_provider,
+            &test_prompt("hello"),
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &test_responses_metadata_for_client(
+                &model_client,
+                /*turn_id*/ None,
+                "test-window".to_string(),
+                /*parent_thread_id*/ None,
+                TestCodexResponsesRequestKind::Turn,
+            ),
+        )
+        .await
+        .expect_err("invalid Responses body should fail");
+
+    let CodexErr::InvalidRequest(message) = err else {
+        panic!("unexpected error: {err}");
+    };
+    assert!(
+        message
+            .starts_with("runtime model request adapter returned invalid Responses request body:"),
+        "unexpected message: {message}"
+    );
+}
+
+#[tokio::test]
+async fn runtime_context_assembly_observer_receives_provider_bound_input() {
+    let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses);
+    let api_provider = provider
+        .to_api_provider(/*auth_mode*/ None)
+        .expect("build test API provider");
+    let thread_id = ThreadId::new();
+    let observer = RecordingContextObserver::default();
+    let observed = Arc::clone(&observer.observed);
+    let mut builder = RuntimeRegistry::builder();
+    builder
+        .context_assembly_observer(observer)
+        .expect("register context observer");
+    let model_client = ModelClient::new(
+        /*auth_manager*/ None,
+        AgentIdentityAuthPolicy::JwtOnly,
+        thread_id,
+        provider,
+        SessionSource::Exec,
+        "test_originator".to_string(),
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
+        builder.build(),
+        /*attestation_provider*/ None,
+    );
+    let responses_metadata = test_responses_metadata_for_client(
+        &model_client,
+        /*turn_id*/ None,
+        "test-window".to_string(),
+        /*parent_thread_id*/ None,
+        TestCodexResponsesRequestKind::Turn,
+    );
+    let prompt = Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "observer hello".to_string(),
+            }],
+            phase: None,
+        }],
+        base_instructions: BaseInstructions {
+            text: "Be brief.".to_string(),
+        },
+        ..Prompt::default()
+    };
+
+    let _ = model_client
+        .build_model_api_request(
+            &api_provider,
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &responses_metadata,
+        )
+        .await
+        .expect("build request with observer");
+
+    let actual = observed
+        .lock()
+        .expect("observer lock should not be poisoned")
+        .clone();
+    let expected = vec![json!([{
+        "type": "message",
+        "role": "user",
+        "content": [{
+            "type": "input_text",
+            "text": "observer hello"
+        }]
+    }])];
+    assert_eq!(actual, expected);
 }
 
 #[derive(Default)]
@@ -626,6 +1165,7 @@ async fn response_stream_records_last_model_feedback_ids() {
         Ok(ResponseEvent::Completed {
             response_id: "resp-123".to_string(),
             token_usage: None,
+            raw_provider_metadata: None,
             end_turn: Some(true),
         }),
     ]);
@@ -821,6 +1361,7 @@ fn model_client_with_counting_attestation(
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*item_ids_enabled*/ false,
+        RuntimeRegistry::default(),
         Some(Arc::new(CountingAttestationProvider {
             calls: attestation_calls.clone(),
         })),

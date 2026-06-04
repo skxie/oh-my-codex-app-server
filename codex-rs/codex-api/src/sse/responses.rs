@@ -15,7 +15,9 @@ use codex_protocol::protocol::TurnModerationMetadataEvent;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -99,6 +101,28 @@ pub fn spawn_response_stream(
     }
 }
 
+pub fn spawn_chat_completions_stream(
+    stream_response: StreamResponse,
+    idle_timeout: Duration,
+    telemetry: Option<Arc<dyn SseTelemetry>>,
+) -> ResponseStream {
+    let upstream_request_id = stream_response
+        .headers
+        .get(REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
+    tokio::spawn(async move {
+        process_chat_completions_sse(stream_response.bytes, tx_event, idle_timeout, telemetry)
+            .await;
+    });
+
+    ResponseStream {
+        rx_event,
+        upstream_request_id,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct Error {
@@ -153,6 +177,63 @@ struct ResponseCompletedInputTokensDetails {
 
 #[derive(Debug, Deserialize)]
 struct ResponseCompletedOutputTokensDetails {
+    reasoning_tokens: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionChunk {
+    id: String,
+    choices: Vec<ChatCompletionChoice>,
+    #[serde(default)]
+    usage: Option<ChatCompletionUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatCompletionChoice {
+    #[serde(default)]
+    delta: ChatCompletionDelta,
+    finish_reason: Option<String>,
+}
+
+#[derive(Default, Debug, Deserialize)]
+struct ChatCompletionDelta {
+    content: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ChatCompletionUsage {
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    total_tokens: i64,
+    prompt_tokens_details: Option<ChatCompletionPromptTokensDetails>,
+    completion_tokens_details: Option<ChatCompletionCompletionTokensDetails>,
+}
+
+impl From<ChatCompletionUsage> for TokenUsage {
+    fn from(val: ChatCompletionUsage) -> Self {
+        TokenUsage {
+            input_tokens: val.prompt_tokens,
+            cached_input_tokens: val
+                .prompt_tokens_details
+                .map(|details| details.cached_tokens)
+                .unwrap_or(0),
+            output_tokens: val.completion_tokens,
+            reasoning_output_tokens: val
+                .completion_tokens_details
+                .map(|details| details.reasoning_tokens)
+                .unwrap_or(0),
+            total_tokens: val.total_tokens,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ChatCompletionPromptTokensDetails {
+    cached_tokens: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ChatCompletionCompletionTokensDetails {
     reasoning_tokens: i64,
 }
 
@@ -419,11 +500,14 @@ pub fn process_responses_event(
         }
         "response.completed" => {
             if let Some(resp_val) = event.response {
+                let raw_provider_metadata =
+                    raw_provider_metadata_from_completed_response(&resp_val);
                 match serde_json::from_value::<ResponseCompleted>(resp_val) {
                     Ok(resp) => {
                         return Ok(Some(ResponseEvent::Completed {
                             response_id: resp.id,
                             token_usage: resp.usage.map(Into::into),
+                            raw_provider_metadata,
                             end_turn: resp.end_turn,
                         }));
                     }
@@ -456,6 +540,23 @@ pub fn process_responses_event(
     }
 
     Ok(None)
+}
+
+fn raw_provider_metadata_from_completed_response(
+    response: &Value,
+) -> Option<std::collections::HashMap<String, Value>> {
+    let mut values = std::collections::HashMap::new();
+    if let Some(usage) = response.get("usage") {
+        values.insert("response.usage".to_string(), usage.clone());
+    }
+    if let Some(metadata) = response.get("metadata") {
+        values.insert("response.metadata".to_string(), metadata.clone());
+    }
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
+    }
 }
 
 #[cfg(test)]
@@ -579,6 +680,133 @@ async fn process_sse_with_treatment(
                 response_error = Some(error.into_api_error());
             }
         };
+    }
+}
+
+async fn process_chat_completions_sse(
+    stream: ByteStream,
+    tx_event: mpsc::Sender<Result<ResponseEvent, ApiError>>,
+    idle_timeout: Duration,
+    telemetry: Option<Arc<dyn SseTelemetry>>,
+) {
+    let mut stream = stream.eventsource();
+    let mut response_id: Option<String> = None;
+    let mut message_started = false;
+    let mut message_text = String::new();
+    let mut token_usage: Option<TokenUsage> = None;
+    let mut raw_provider_metadata: Option<HashMap<String, Value>> = None;
+
+    loop {
+        let start = Instant::now();
+        let response = timeout(idle_timeout, stream.next()).await;
+        if let Some(t) = telemetry.as_ref() {
+            t.on_sse_poll(&response, start.elapsed());
+        }
+        let sse = match response {
+            Ok(Some(Ok(sse))) => sse,
+            Ok(Some(Err(e))) => {
+                debug!("SSE Error: {e:#}");
+                let _ = tx_event.send(Err(ApiError::Stream(e.to_string()))).await;
+                return;
+            }
+            Ok(None) => {
+                let _ = tx_event
+                    .send(Err(ApiError::Stream(
+                        "stream closed before chat completion finished".into(),
+                    )))
+                    .await;
+                return;
+            }
+            Err(_) => {
+                let _ = tx_event
+                    .send(Err(ApiError::Stream("idle timeout waiting for SSE".into())))
+                    .await;
+                return;
+            }
+        };
+
+        trace!("Chat Completions SSE event: {}", &sse.data);
+        if sse.data.trim() == "[DONE]" {
+            if message_started
+                && tx_event
+                    .send(Ok(ResponseEvent::OutputItemDone(ResponseItem::Message {
+                        id: response_id.clone(),
+                        role: "assistant".to_string(),
+                        content: vec![codex_protocol::models::ContentItem::OutputText {
+                            text: message_text.clone(),
+                        }],
+                        phase: None,
+                        internal_chat_message_metadata_passthrough: None,
+                    })))
+                    .await
+                    .is_err()
+            {
+                return;
+            }
+            let _ = tx_event
+                .send(Ok(ResponseEvent::Completed {
+                    response_id: response_id
+                        .unwrap_or_else(|| "chatcmpl-runtime-adapter".to_string()),
+                    token_usage,
+                    raw_provider_metadata,
+                    end_turn: Some(true),
+                }))
+                .await;
+            return;
+        }
+
+        let chunk: ChatCompletionChunk = match serde_json::from_str(&sse.data) {
+            Ok(chunk) => chunk,
+            Err(e) => {
+                debug!(
+                    "Failed to parse Chat Completions SSE event: {e}, data: {}",
+                    &sse.data
+                );
+                continue;
+            }
+        };
+        if response_id.is_none() {
+            response_id = Some(chunk.id.clone());
+        }
+        if let Some(usage) = chunk.usage {
+            token_usage = Some(TokenUsage::from(usage.clone()));
+            let mut metadata = HashMap::new();
+            if let Ok(value) = serde_json::to_value(usage) {
+                metadata.insert("usage".to_string(), value);
+            }
+            raw_provider_metadata = Some(metadata);
+        }
+        for choice in chunk.choices {
+            if let Some(content) = choice.delta.content {
+                if !message_started {
+                    message_started = true;
+                    if tx_event
+                        .send(Ok(ResponseEvent::OutputItemAdded(ResponseItem::Message {
+                            id: response_id.clone(),
+                            role: "assistant".to_string(),
+                            content: Vec::new(),
+                            phase: None,
+                            internal_chat_message_metadata_passthrough: None,
+                        })))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                message_text.push_str(&content);
+                if tx_event
+                    .send(Ok(ResponseEvent::OutputTextDelta(content)))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            if choice.finish_reason.is_some() {
+                // Chat Completions sends the actual terminal signal as [DONE].
+            }
+        }
     }
 }
 
@@ -786,10 +1014,12 @@ mod tests {
             Ok(ResponseEvent::Completed {
                 response_id,
                 token_usage,
+                raw_provider_metadata,
                 end_turn,
             }) => {
                 assert_eq!(response_id, "resp1");
                 assert!(token_usage.is_none());
+                assert!(raw_provider_metadata.is_none());
                 assert!(end_turn.is_none());
             }
             other => panic!("unexpected third event: {other:?}"),
@@ -927,10 +1157,67 @@ mod tests {
             Ok(ResponseEvent::Completed {
                 response_id,
                 token_usage,
+                raw_provider_metadata,
                 end_turn,
             }) => {
                 assert_eq!(response_id, "resp1");
                 assert!(token_usage.is_none());
+                assert!(raw_provider_metadata.is_none());
+                assert!(end_turn.is_none());
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn process_sse_exposes_raw_provider_usage_metadata() {
+        let events = run_sse(vec![json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp1",
+                "usage": {
+                    "input_tokens": 100,
+                    "input_tokens_details": { "cached_tokens": 80 },
+                    "output_tokens": 15,
+                    "output_tokens_details": { "reasoning_tokens": 7 },
+                    "total_tokens": 115
+                },
+                "metadata": {
+                    "cache_miss_prompt_tokens": 20
+                }
+            }
+        })])
+        .await;
+
+        match &events[0] {
+            ResponseEvent::Completed {
+                response_id,
+                token_usage,
+                raw_provider_metadata,
+                end_turn,
+            } => {
+                assert_eq!(response_id, "resp1");
+                assert_eq!(
+                    token_usage.as_ref().map(|usage| usage.cached_input_tokens),
+                    Some(80)
+                );
+                let raw_provider_metadata = raw_provider_metadata
+                    .as_ref()
+                    .expect("raw provider metadata should be captured");
+                assert_eq!(
+                    raw_provider_metadata.get("response.usage"),
+                    Some(&json!({
+                        "input_tokens": 100,
+                        "input_tokens_details": { "cached_tokens": 80 },
+                        "output_tokens": 15,
+                        "output_tokens_details": { "reasoning_tokens": 7 },
+                        "total_tokens": 115
+                    }))
+                );
+                assert_eq!(
+                    raw_provider_metadata.get("response.metadata"),
+                    Some(&json!({ "cache_miss_prompt_tokens": 20 }))
+                );
                 assert!(end_turn.is_none());
             }
             other => panic!("unexpected event: {other:?}"),
@@ -1236,6 +1523,7 @@ mod tests {
             ResponseEvent::Completed {
                 response_id,
                 token_usage: None,
+                raw_provider_metadata: None,
                 end_turn: None,
             } if response_id == "resp-1"
         );
@@ -1273,6 +1561,7 @@ mod tests {
             ResponseEvent::Completed {
                 response_id,
                 token_usage: None,
+                raw_provider_metadata: None,
                 end_turn: None,
             } if response_id == "resp-1"
         );
@@ -1308,6 +1597,7 @@ mod tests {
             ResponseEvent::Completed {
                 response_id,
                 token_usage: None,
+                raw_provider_metadata: None,
                 end_turn: None,
             } if response_id == "resp-1"
         );

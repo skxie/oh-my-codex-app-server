@@ -90,6 +90,7 @@ pub enum ResponseEvent {
     Completed {
         response_id: String,
         token_usage: Option<TokenUsage>,
+        raw_provider_metadata: Option<HashMap<String, Value>>,
         /// Did the model affirmatively end its turn? Some providers do not set this,
         /// so we rely on fallback logic when this is `None`.
         end_turn: Option<bool>,
@@ -129,7 +130,7 @@ pub(crate) struct SafetyBufferingTreatment {
     pub faster_model: Option<String>,
 }
 
-#[derive(Debug, Serialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningContext {
     Auto,
@@ -137,7 +138,7 @@ pub enum ReasoningContext {
     AllTurns,
 }
 
-#[derive(Debug, Serialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Reasoning {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<ReasoningEffortConfig>,
@@ -147,14 +148,14 @@ pub struct Reasoning {
     pub context: Option<ReasoningContext>,
 }
 
-#[derive(Debug, Serialize, Default, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TextFormatType {
     #[default]
     JsonSchema,
 }
 
-#[derive(Debug, Serialize, Default, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct TextFormat {
     /// Format type used by the OpenAI text controls.
     pub r#type: TextFormatType,
@@ -168,7 +169,7 @@ pub struct TextFormat {
 
 /// Controls the `text` field for the Responses API, combining verbosity and
 /// optional JSON schema output formatting.
-#[derive(Debug, Serialize, Default, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct TextControls {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verbosity: Option<OpenAiVerbosity>,
@@ -176,7 +177,7 @@ pub struct TextControls {
     pub format: Option<TextFormat>,
 }
 
-#[derive(Debug, Serialize, Default, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum OpenAiVerbosity {
     Low,
@@ -195,7 +196,7 @@ impl From<VerbosityConfig> for OpenAiVerbosity {
     }
 }
 
-#[derive(Debug, Serialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct ResponsesApiRequest {
     pub model: String,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -217,6 +218,19 @@ pub struct ResponsesApiRequest {
     pub text: Option<TextControls>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_metadata: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum ModelApiResponseMapper {
+    Responses,
+    ChatCompletions,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ModelApiHttpRequest {
+    pub endpoint_path: String,
+    pub body: Value,
+    pub response_mapper: ModelApiResponseMapper,
 }
 
 impl From<&ResponsesApiRequest> for ResponseCreateWsRequest {

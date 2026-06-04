@@ -1,4 +1,6 @@
 use crate::auth::SharedAuthProvider;
+use crate::common::ModelApiHttpRequest;
+use crate::common::ModelApiResponseMapper;
 use crate::common::ResponseStream;
 use crate::common::ResponsesApiRequest;
 use crate::endpoint::session::EndpointSession;
@@ -8,6 +10,7 @@ use crate::requests::Compression;
 use crate::requests::headers::build_session_headers;
 use crate::requests::headers::insert_header;
 use crate::requests::headers::subagent_header;
+use crate::sse::spawn_chat_completions_stream;
 use crate::sse::spawn_response_stream;
 use crate::telemetry::SseTelemetry;
 use codex_client::EncodedJsonBody;
@@ -93,8 +96,59 @@ impl<T: HttpTransport> ResponsesClient<T> {
             insert_header(&mut headers, "x-openai-subagent", &subagent);
         }
 
-        self.stream_encoded(body, headers, compression, turn_state)
-            .await
+        self.stream_encoded_path(
+            Self::path(),
+            body,
+            headers,
+            compression,
+            turn_state,
+            ModelApiResponseMapper::Responses,
+        )
+        .await
+    }
+
+    #[instrument(
+        name = "model_api.stream_request",
+        level = "info",
+        skip_all,
+        fields(
+            transport = "model_api_http",
+            http.method = "POST",
+            api.path = %request.endpoint_path
+        )
+    )]
+    pub async fn stream_model_api_request(
+        &self,
+        request: ModelApiHttpRequest,
+        options: ResponsesOptions,
+    ) -> Result<ResponseStream, ApiError> {
+        let ResponsesOptions {
+            session_id,
+            thread_id,
+            session_source,
+            extra_headers,
+            compression,
+            turn_state,
+        } = options;
+
+        let mut headers = extra_headers;
+        if let Some(ref thread_id) = thread_id {
+            insert_header(&mut headers, "x-client-request-id", thread_id);
+        }
+        headers.extend(build_session_headers(session_id, thread_id));
+        if let Some(subagent) = subagent_header(&session_source) {
+            insert_header(&mut headers, "x-openai-subagent", &subagent);
+        }
+
+        self.stream_path(
+            &request.endpoint_path,
+            request.body,
+            headers,
+            compression,
+            turn_state,
+            request.response_mapper,
+        )
+        .await
     }
 
     fn path() -> &'static str {
@@ -119,18 +173,47 @@ impl<T: HttpTransport> ResponsesClient<T> {
         compression: Compression,
         turn_state: Option<Arc<OnceLock<String>>>,
     ) -> Result<ResponseStream, ApiError> {
-        let body = EncodedJsonBody::encode(&body)
-            .map_err(|e| ApiError::Stream(format!("failed to encode responses request: {e}")))?;
-        self.stream_encoded(body, extra_headers, compression, turn_state)
-            .await
+        self.stream_path(
+            Self::path(),
+            body,
+            extra_headers,
+            compression,
+            turn_state,
+            ModelApiResponseMapper::Responses,
+        )
+        .await
     }
 
-    async fn stream_encoded(
+    async fn stream_path(
         &self,
+        path: &str,
+        body: Value,
+        extra_headers: HeaderMap,
+        compression: Compression,
+        turn_state: Option<Arc<OnceLock<String>>>,
+        response_mapper: ModelApiResponseMapper,
+    ) -> Result<ResponseStream, ApiError> {
+        let body = EncodedJsonBody::encode(&body)
+            .map_err(|e| ApiError::Stream(format!("failed to encode model API request: {e}")))?;
+        self.stream_encoded_path(
+            path,
+            body,
+            extra_headers,
+            compression,
+            turn_state,
+            response_mapper,
+        )
+        .await
+    }
+
+    async fn stream_encoded_path(
+        &self,
+        path: &str,
         body: EncodedJsonBody,
         extra_headers: HeaderMap,
         compression: Compression,
         turn_state: Option<Arc<OnceLock<String>>>,
+        response_mapper: ModelApiResponseMapper,
     ) -> Result<ResponseStream, ApiError> {
         let request_compression = match compression {
             Compression::None => RequestCompression::None,
@@ -141,7 +224,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
             .session
             .stream_encoded_json_with(
                 Method::POST,
-                Self::path(),
+                path,
                 extra_headers,
                 Some(body),
                 |req| {
@@ -154,11 +237,19 @@ impl<T: HttpTransport> ResponsesClient<T> {
             )
             .await?;
 
-        Ok(spawn_response_stream(
-            stream_response,
-            self.session.provider().stream_idle_timeout,
-            self.sse_telemetry.clone(),
-            turn_state,
-        ))
+        let idle_timeout = self.session.provider().stream_idle_timeout;
+        match response_mapper {
+            ModelApiResponseMapper::Responses => Ok(spawn_response_stream(
+                stream_response,
+                idle_timeout,
+                self.sse_telemetry.clone(),
+                turn_state,
+            )),
+            ModelApiResponseMapper::ChatCompletions => Ok(spawn_chat_completions_stream(
+                stream_response,
+                idle_timeout,
+                self.sse_telemetry.clone(),
+            )),
+        }
     }
 }
