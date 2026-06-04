@@ -788,6 +788,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io::Write;
     use std::path::Path;
+    use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::MutexGuard;
     use tempfile::TempDir;
@@ -1150,6 +1151,101 @@ stream_max_retries = 0
         }
     }
 
+    struct RuntimeFixtureSingleTurnResult {
+        request_body: Value,
+        usage: ThreadTokenUsageUpdatedNotification,
+        observed_inputs: Vec<Value>,
+    }
+
+    async fn run_single_turn_runtime_fixture(
+        runtime_registry: RuntimeRegistry,
+        observed: Arc<Mutex<Vec<Value>>>,
+    ) -> RuntimeFixtureSingleTurnResult {
+        let server = responses::start_mock_server().await;
+        let response = responses::sse(vec![
+            responses::ev_response_created("resp-1"),
+            responses::ev_assistant_message("msg-1", "Done"),
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-1",
+                    "usage": {
+                        "input_tokens": 7,
+                        "input_tokens_details": null,
+                        "output_tokens": 2,
+                        "output_tokens_details": null,
+                        "total_tokens": 9
+                    },
+                    "metadata": {
+                        "runtime_fixture_usage": {
+                            "prompt_tokens": 11,
+                            "completion_tokens": 22,
+                            "cached_prompt_tokens": 3,
+                            "cache_miss_prompt_tokens": 8,
+                            "reasoning_tokens": 5
+                        }
+                    }
+                }
+            }),
+        ]);
+        let response_mock = responses::mount_sse_once(&server, response).await;
+
+        let codex_home = TempDir::new().expect("temp dir");
+        write_runtime_fixture_config(codex_home.path(), &server.uri());
+        let mut client =
+            start_test_client_with_runtime_registry(runtime_registry, codex_home).await;
+
+        let thread_response = client
+            .request(ClientRequest::ThreadStart {
+                request_id: RequestId::Integer(20),
+                params: ThreadStartParams {
+                    model: Some("mock-model".to_string()),
+                    ..ThreadStartParams::default()
+                },
+            })
+            .await
+            .expect("thread/start transport should work")
+            .expect("thread/start should succeed");
+        let thread: ThreadStartResponse =
+            serde_json::from_value(thread_response).expect("thread/start should parse");
+
+        client
+            .request(ClientRequest::TurnStart {
+                request_id: RequestId::Integer(21),
+                params: TurnStartParams {
+                    thread_id: thread.thread.id,
+                    input: vec![UserInput::Text {
+                        text: "Hello runtime fixture".to_string(),
+                        text_elements: Vec::new(),
+                    }],
+                    ..TurnStartParams::default()
+                },
+            })
+            .await
+            .expect("turn/start transport should work")
+            .expect("turn/start should succeed");
+
+        let (usage, _completed) = read_until_runtime_fixture_events(&mut client).await;
+        let requests = response_mock.requests();
+        assert_eq!(requests.len(), 1);
+        let request_body = requests[0].body_json();
+        let observed_inputs = observed
+            .lock()
+            .expect("observer lock should not be poisoned")
+            .clone();
+
+        client
+            .shutdown()
+            .await
+            .expect("in-process runtime should shutdown cleanly");
+
+        RuntimeFixtureSingleTurnResult {
+            request_body,
+            usage,
+            observed_inputs,
+        }
+    }
+
     #[tokio::test]
     async fn in_process_start_initializes_and_handles_typed_v2_request() {
         let client = start_test_client(SessionSource::Cli).await;
@@ -1382,6 +1478,59 @@ stream_max_retries = 0
             .shutdown()
             .await
             .expect("in-process runtime should shutdown cleanly");
+    }
+
+    #[tokio::test]
+    async fn runtime_registry_fake_backend_fixture_compares_stock_and_custom_registry() {
+        let stock = run_single_turn_runtime_fixture(
+            RuntimeRegistry::default(),
+            Arc::new(Mutex::new(Vec::new())),
+        )
+        .await;
+
+        let observer = RuntimeFixtureContextObserver::default();
+        let observed = Arc::clone(&observer.observed);
+        let mut registry = RuntimeRegistry::builder();
+        registry
+            .model_request_adapter(RuntimeFixtureModelRequestAdapter)
+            .expect("model request adapter should register")
+            .context_contributor(RuntimeFixtureContextContributor)
+            .expect("context contributor should register")
+            .context_assembly_observer(observer)
+            .expect("context observer should register")
+            .usage_metadata_mapper(RuntimeFixtureUsageMetadataMapper)
+            .expect("usage mapper should register");
+        let custom = run_single_turn_runtime_fixture(registry.build(), observed).await;
+
+        assert_eq!(stock.request_body["client_metadata"]["source"], Value::Null);
+        assert!(!value_contains_text(
+            &stock.request_body["input"],
+            RUNTIME_FIXTURE_CONTEXT
+        ));
+        assert_eq!(stock.observed_inputs, Vec::<Value>::new());
+        assert_eq!(stock.usage.token_usage.last.input_tokens, 7);
+        assert_eq!(stock.usage.token_usage.last.cached_input_tokens, 0);
+        assert_eq!(stock.usage.token_usage.last.output_tokens, 2);
+        assert_eq!(stock.usage.token_usage.last.reasoning_output_tokens, 0);
+
+        assert_eq!(
+            custom.request_body["client_metadata"],
+            json!({ "source": "runtime-fixture" })
+        );
+        assert!(value_contains_text(
+            &custom.request_body["input"],
+            RUNTIME_FIXTURE_CONTEXT
+        ));
+        assert!(
+            custom
+                .observed_inputs
+                .iter()
+                .any(|input| value_contains_text(input, RUNTIME_FIXTURE_CONTEXT))
+        );
+        assert_eq!(custom.usage.token_usage.last.input_tokens, 11);
+        assert_eq!(custom.usage.token_usage.last.cached_input_tokens, 3);
+        assert_eq!(custom.usage.token_usage.last.output_tokens, 22);
+        assert_eq!(custom.usage.token_usage.last.reasoning_output_tokens, 5);
     }
 
     #[tokio::test]

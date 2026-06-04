@@ -102,7 +102,7 @@ verify-layer1-adapters:
     RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-core runtime_model_request_adapter runtime_context runtime_tool_middleware runtime_usage_metadata_mapper_changes_recorded_token_usage
     RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-app-server-sdk
     RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-app-server layer2_cookbook_examples
-    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-app-server runtime_registry_fake_backend_fixture_takes_effect_through_in_process_app_server
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-app-server runtime_registry_fake_backend_fixture
     RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-memories-write
 
 [windows]
@@ -112,7 +112,7 @@ verify-layer1-adapters:
     $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-core runtime_model_request_adapter runtime_context runtime_tool_middleware runtime_usage_metadata_mapper_changes_recorded_token_usage
     $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-app-server-sdk
     $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-app-server layer2_cookbook_examples
-    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-app-server runtime_registry_fake_backend_fixture_takes_effect_through_in_process_app_server
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-app-server runtime_registry_fake_backend_fixture
     $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-memories-write
 
 # Run from the repository root so scripts that resolve paths from `cwd` see
