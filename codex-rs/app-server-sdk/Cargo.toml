@@ -14,6 +14,7 @@ workspace = true
 
 [dependencies]
 codex-app-server = { workspace = true }
+codex-app-server-client = { workspace = true }
 codex-runtime-api = { workspace = true }
 
 [dev-dependencies]

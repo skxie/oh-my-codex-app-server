@@ -6,6 +6,7 @@
 
 pub use codex_app_server::in_process::InProcessClientHandle;
 pub use codex_app_server::in_process::InProcessStartArgs;
+pub use codex_app_server_client::InProcessClientStartArgs;
 
 use codex_runtime_api::RuntimeRegistry;
 use std::io::Result as IoResult;
@@ -29,6 +30,18 @@ impl AppServerBuilder {
     /// `codex_app_server::in_process::start` directly.
     pub fn new(args: InProcessStartArgs) -> Self {
         Self { args }
+    }
+
+    /// Creates a builder from the production app-server client startup args.
+    ///
+    /// This path reuses `codex-app-server-client`'s conversion into
+    /// [`InProcessStartArgs`], so embedders do not need to duplicate initialize,
+    /// config, state, auth, and thread-config startup logic before installing a
+    /// custom [`RuntimeRegistry`].
+    pub fn from_client_start_args(args: InProcessClientStartArgs) -> Self {
+        Self {
+            args: args.into_runtime_start_args(),
+        }
     }
 
     /// Installs the runtime registry used by fork-owned backend extension seams.

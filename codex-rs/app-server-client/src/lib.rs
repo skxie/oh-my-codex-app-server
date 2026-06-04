@@ -389,7 +389,23 @@ impl InProcessClientStartArgs {
         }
     }
 
-    fn into_runtime_start_args(self) -> InProcessStartArgs {
+    /// Converts client startup args into the lower-level in-process app-server
+    /// startup contract with the stock runtime registry.
+    pub fn into_runtime_start_args(self) -> InProcessStartArgs {
+        self.into_runtime_start_args_with_registry(codex_runtime_api::RuntimeRegistry::default())
+    }
+
+    /// Converts client startup args into the lower-level in-process app-server
+    /// startup contract with a caller-provided runtime registry.
+    ///
+    /// Layer 2 embedders can use this to preserve the same config, initialize,
+    /// state, auth, and thread-config startup behavior as
+    /// [`InProcessAppServerClient`] while installing fork-owned runtime
+    /// extension seams.
+    pub fn into_runtime_start_args_with_registry(
+        self,
+        runtime_registry: codex_runtime_api::RuntimeRegistry,
+    ) -> InProcessStartArgs {
         let initialize = self.initialize_params();
         let thread_config_loader = configured_thread_config_loader(&self.config);
         InProcessStartArgs {
@@ -403,7 +419,7 @@ impl InProcessClientStartArgs {
             feedback: self.feedback,
             log_db: self.log_db,
             state_db: self.state_db,
-            runtime_registry: codex_runtime_api::RuntimeRegistry::default(),
+            runtime_registry,
             environment_manager: self.environment_manager,
             config_warnings: self.config_warnings,
             session_source: self.session_source,

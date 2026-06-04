@@ -1931,7 +1931,7 @@ Layer 2 backends use one active implementation per capability:
 - `UsageMetadataMapper`: maps provider/cache/reasoning usage metadata into
   existing Codex token usage accounting.
 
-Minimal embedding shape:
+Minimal SDK embedding shape:
 
 ```rust
 let mut builder = codex_runtime_api::RuntimeRegistry::builder();
@@ -1939,13 +1939,16 @@ builder.model_request_adapter(MyModelRequestAdapter)?;
 builder.context_contributor(MyContextContributor)?;
 builder.tool_middleware(MyToolMiddleware)?;
 
-let client = codex_app_server::in_process::start(InProcessStartArgs {
-    runtime_registry: builder.build(),
-    // other startup fields stay the same as the stock in-process host
-    ..args
-})
+let client = codex_app_server_sdk::AppServerBuilder::from_client_start_args(client_start_args)
+    .runtime_registry(builder.build())
+    .start()
 .await?;
 ```
+
+`client_start_args` is the same production startup contract accepted by
+`codex-app-server-client`. If an embedder has already resolved the lower-level
+`InProcessStartArgs`, `AppServerBuilder::new(in_process_start_args)` remains
+available.
 
 Take-effect gates live in focused Rust tests:
 

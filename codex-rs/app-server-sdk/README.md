@@ -7,6 +7,25 @@ install a custom `codex_runtime_api::RuntimeRegistry`.
 
 ## Minimal Usage
 
+Most Layer 2 embedders should start from the same production startup args used
+by `codex-app-server-client`, then install only their runtime registry:
+
+```rust
+use codex_app_server_sdk::AppServerBuilder;
+
+let client = AppServerBuilder::from_client_start_args(client_start_args)
+    .runtime_registry(runtime_registry)
+    .start()
+    .await?;
+```
+
+This preserves the app-server client's initialize, config, state, auth, and
+thread-config startup behavior while letting the custom backend own Layer 1
+runtime capabilities.
+
+If the caller has already resolved the lower-level in-process startup contract,
+the SDK also accepts it directly:
+
 ```rust
 use codex_app_server_sdk::AppServerBuilder;
 
