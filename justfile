@@ -134,6 +134,7 @@ verify-layer1-adapters:
 [unix]
 pre-push-layer1:
     just verify-layer1-ci
+    just bazel-lock-check
     just fmt-check
     just verify-layer1-adapters
     just tthw-layer1
@@ -144,6 +145,7 @@ pre-push-layer1:
 [windows]
 pre-push-layer1:
     just verify-layer1-ci
+    just bazel-lock-check
     just fmt-check
     just verify-layer1-adapters
     just tthw-layer1

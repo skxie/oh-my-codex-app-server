@@ -10,6 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 HOOK = ROOT / ".githooks" / "pre-push"
 WORKFLOW = ROOT / ".github" / "workflows" / "runtime-layer1.yml"
+JUSTFILE = ROOT / "justfile"
 
 REQUIRED_LAYER1_PATHS = [
     "codex-rs/runtime-api/",
@@ -110,7 +111,12 @@ def extract_workflow_event_paths(workflow: str, event: str) -> list[str]:
 
 
 def validate_layer1_ci(
-    hook: str, workflow: str, *, hook_executable: bool, enforce_executable: bool
+    hook: str,
+    workflow: str,
+    justfile: str,
+    *,
+    hook_executable: bool,
+    enforce_executable: bool,
 ) -> list[str]:
     errors = []
 
@@ -125,6 +131,9 @@ def validate_layer1_ci(
 
     if "run: just pre-push-layer1" not in workflow:
         errors.append("runtime-layer1.yml must run `just pre-push-layer1`")
+
+    if "just bazel-lock-check" not in justfile:
+        errors.append("pre-push-layer1 must run `just bazel-lock-check`")
 
     hook_pattern = extract_hook_path_pattern(hook)
     if hook_pattern is None:
@@ -171,9 +180,11 @@ def validate_layer1_ci(
 def main() -> int:
     hook = read(HOOK)
     workflow = read(WORKFLOW)
+    justfile = read(JUSTFILE)
     errors = validate_layer1_ci(
         hook,
         workflow,
+        justfile,
         hook_executable=os.access(HOOK, os.X_OK),
         enforce_executable=os.name != "nt",
     )

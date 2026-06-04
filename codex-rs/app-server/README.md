@@ -1939,16 +1939,19 @@ builder.model_request_adapter(MyModelRequestAdapter)?;
 builder.context_contributor(MyContextContributor)?;
 builder.tool_middleware(MyToolMiddleware)?;
 
+// client_start_args: codex_app_server_client::ClientStartArgs
 let client = codex_app_server_sdk::AppServerBuilder::from_client_start_args(client_start_args)
     .runtime_registry(builder.build())
-    .start()
+    .start_client()
 .await?;
 ```
 
 `client_start_args` is the same production startup contract accepted by
 `codex-app-server-client`. If an embedder has already resolved the lower-level
 `InProcessStartArgs`, `AppServerBuilder::new(in_process_start_args)` remains
-available.
+available. Use `start()` only when the caller needs the lower-level in-process
+transport handle; most embedders should use `start_client()` to receive the
+typed `codex_app_server_client::AppServerClient` facade.
 
 Take-effect gates live in focused Rust tests:
 
@@ -1983,6 +1986,61 @@ model client startup path.
 
 These tests prove custom runtime capabilities change the existing Codex runtime
 path without replacing app-server execution.
+
+### Runtime Extension Error Anchors
+
+Runtime extension diagnostics include `why_likely`, `how_to_fix`, and an
+optional `docs_anchor`. In the current app-server v2 surface these diagnostics
+are emitted as the turn error message; the anchor is a display and routing hint,
+not a separate machine-readable JSON-RPC field.
+
+Known anchors:
+
+- `runtime-registry-duplicate-capability`: a registry builder attempted to
+  install more than one active implementation for the same capability.
+- `model-request-adapter-unsupported-api-kind`: the adapter selected an API
+  kind or mapper not wired to the current transport path.
+- `model-request-adapter-invalid-responses-body`: the adapter returned JSON that
+  does not deserialize to Codex's Responses request shape.
+- `protocol-response-mapper-unsupported`: the selected response mapper is not
+  wired to a Codex stream parser for this transport.
+- `context-contributor-oversized-block`: a contributed context block exceeded
+  the bounded prompt-fragment limit.
+- `context-policy-unknown-candidate`: a context policy selected or referenced an
+  unknown candidate.
+- `context-policy-changed-candidate-source`: a policy changed a candidate source
+  while selecting history.
+- `context-policy-rewrite-current-user-input`: a policy rewrote the current user
+  input.
+- `context-policy-rewrite-tool-pair`: a policy rewrote one side of a tool
+  call/result pair.
+- `context-policy-rewrite-non-history`: a policy rewrote a non-history
+  candidate.
+- `context-policy-removed-current-user-input`: a policy omitted the current user
+  input.
+- `context-policy-orphaned-tool-pair`: a policy selected only one side of a tool
+  call/result pair.
+- `context-policy-invalid-candidate-id`: a policy returned an invalid candidate
+  id.
+- `context-policy-selection-error`: a policy rejected or failed to produce a
+  valid candidate graph.
+- `tool-middleware-before-error`: a middleware failed before the tool call was
+  dispatched.
+- `tool-middleware-before-timeout`: a middleware did not return a before-call
+  decision before its timeout.
+- `tool-middleware-invalid-before-decision`: a middleware returned a before-call
+  decision that violates the tool-call contract.
+- `tool-middleware-changed-call-identity`: a middleware attempted to change the
+  stable tool call identity.
+- `tool-middleware-after-timeout`: a middleware did not return an after-call
+  decision before its timeout.
+- `tool-middleware-invalid-repair`: a middleware returned repaired arguments
+  that do not match the original tool schema.
+- `usage-metadata-mapper-error`: a usage mapper rejected provider metadata.
+- `usage-metadata-invalid-token-count`: a usage mapper returned token counts
+  outside app-server `TokenUsage` integer bounds.
+- `usage-metadata-oversized-raw-provider-metadata`: raw provider metadata
+  exceeded the bounded runtime metadata envelope.
 
 ## Auth endpoints
 

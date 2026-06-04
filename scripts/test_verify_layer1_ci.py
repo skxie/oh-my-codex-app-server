@@ -57,11 +57,20 @@ jobs:
 """
 
 
+def good_justfile() -> str:
+    return """pre-push-layer1:
+    just verify-layer1-ci
+    just bazel-lock-check
+    just fmt-check
+"""
+
+
 class VerifyLayer1CiTests(unittest.TestCase):
     def test_good_fixture_validates(self) -> None:
         errors = verify_layer1_ci.validate_layer1_ci(
             good_hook(),
             good_workflow(),
+            good_justfile(),
             hook_executable=True,
             enforce_executable=True,
         )
@@ -80,6 +89,7 @@ class VerifyLayer1CiTests(unittest.TestCase):
         errors = verify_layer1_ci.validate_layer1_ci(
             good_hook(),
             workflow,
+            good_justfile(),
             hook_executable=True,
             enforce_executable=True,
         )
@@ -95,6 +105,7 @@ class VerifyLayer1CiTests(unittest.TestCase):
         errors = verify_layer1_ci.validate_layer1_ci(
             hook,
             good_workflow(),
+            good_justfile(),
             hook_executable=True,
             enforce_executable=True,
         )
@@ -108,11 +119,26 @@ class VerifyLayer1CiTests(unittest.TestCase):
         errors = verify_layer1_ci.validate_layer1_ci(
             good_hook(),
             good_workflow(),
+            good_justfile(),
             hook_executable=False,
             enforce_executable=True,
         )
 
         self.assertIn(".githooks/pre-push must be executable", errors)
+
+    def test_pre_push_layer1_must_run_bazel_lock_check(self) -> None:
+        errors = verify_layer1_ci.validate_layer1_ci(
+            good_hook(),
+            good_workflow(),
+            good_justfile().replace("    just bazel-lock-check\n", ""),
+            hook_executable=True,
+            enforce_executable=True,
+        )
+
+        self.assertIn(
+            "pre-push-layer1 must run `just bazel-lock-check`",
+            errors,
+        )
 
 
 class PrePushHookTests(unittest.TestCase):

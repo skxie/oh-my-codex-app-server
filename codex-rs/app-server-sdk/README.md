@@ -13,9 +13,10 @@ by `codex-app-server-client`, then install only their runtime registry:
 ```rust
 use codex_app_server_sdk::AppServerBuilder;
 
+// client_start_args: codex_app_server_client::ClientStartArgs
 let client = AppServerBuilder::from_client_start_args(client_start_args)
     .runtime_registry(runtime_registry)
-    .start()
+    .start_client()
     .await?;
 ```
 
@@ -31,7 +32,7 @@ use codex_app_server_sdk::AppServerBuilder;
 
 let client = AppServerBuilder::new(in_process_start_args)
     .runtime_registry(runtime_registry)
-    .start()
+    .start_client()
     .await?;
 ```
 
@@ -48,6 +49,10 @@ in charge of:
 
 The runtime registry only controls the Layer 1 extension seams exposed by
 `codex-runtime-api`.
+
+Use `start()` only when the caller needs the lower-level in-process transport
+handle. Most embedders should use `start_client()` so they receive the typed
+`codex_app_server_client::AppServerClient` facade.
 
 ## Take-Effect Test
 
