@@ -18,6 +18,7 @@ use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::tools::context::AbortedToolOutput;
+use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::context::ToolPayload;
 use crate::tools::lifecycle::notify_tool_aborted;
@@ -28,6 +29,13 @@ use crate::tools::router::ToolCallSource;
 use crate::tools::router::ToolRouter;
 use codex_protocol::error::CodexErr;
 use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::SearchToolCallParams;
+use codex_runtime_api::ToolCall as RuntimeToolCall;
+use codex_runtime_api::ToolCallDecision;
+use codex_runtime_api::ToolCallSource as RuntimeToolCallSource;
+use codex_runtime_api::ToolResult as RuntimeToolResult;
+use codex_runtime_api::ToolResultDecision;
+use codex_runtime_api::ToolResultStatus;
 
 struct ToolCallTimingGuard {
     started_at: Instant,
@@ -141,18 +149,24 @@ impl ToolCallRuntime {
                     let _ = execution_started_at.set(Instant::now());
                 }
 
-                router
+                let dispatch_call =
+                    match apply_before_tool_middleware(&session, dispatch_call, &source).await? {
+                        BeforeToolMiddlewareOutcome::Dispatch(call) => call,
+                        BeforeToolMiddlewareOutcome::Blocked(result) => return Ok(result),
+                    };
+                let result = router
                     .dispatch_tool_call_with_terminal_outcome(
-                        session,
+                        Arc::clone(&session),
                         step_context,
                         invocation_cancellation_token,
                         tracker,
-                        dispatch_call,
-                        source,
+                        dispatch_call.clone(),
+                        source.clone(),
                         dispatch_terminal_outcome_reached,
                     )
                     .instrument(dispatch_span.clone())
-                    .await
+                    .await?;
+                apply_after_tool_middleware(session.as_ref(), &dispatch_call, result, &source).await
             }));
 
         async move {
@@ -341,6 +355,164 @@ impl Drop for ToolCallTimingGuard {
     }
 }
 
+enum BeforeToolMiddlewareOutcome {
+    Dispatch(ToolCall),
+    Blocked(AnyToolResult),
+}
+
+async fn apply_before_tool_middleware(
+    session: &Session,
+    call: ToolCall,
+    source: &ToolCallSource,
+) -> Result<BeforeToolMiddlewareOutcome, FunctionCallError> {
+    let runtime_call = to_runtime_tool_call(&call, source);
+    let decision = session
+        .services
+        .runtime_registry
+        .before_tool_call(runtime_call.clone())
+        .await
+        .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+    let Some(effective_call) = decision.effective_call(&runtime_call) else {
+        let ToolCallDecision::Block { reason } = decision else {
+            return Err(FunctionCallError::RespondToModel(
+                "runtime tool middleware returned no effective call".to_string(),
+            ));
+        };
+        return Ok(BeforeToolMiddlewareOutcome::Blocked(blocked_tool_result(
+            &call, reason,
+        )));
+    };
+    if let Some(repair_record) = decision.repair_record(&runtime_call) {
+        tracing::debug!(
+            call_id = repair_record.call_id.as_str(),
+            tool_name = repair_record.tool_name.as_str(),
+            original_arguments = %repair_record.original_arguments,
+            repaired_arguments = %repair_record.repaired_arguments,
+            "runtime tool middleware repaired tool call arguments"
+        );
+    }
+    if effective_call.call_id != call.call_id
+        || effective_call.tool_name != runtime_call.tool_name
+        || effective_call.source != runtime_call.source
+    {
+        return Err(FunctionCallError::RespondToModel(
+            "runtime tool middleware cannot change tool call identity".to_string(),
+        ));
+    }
+    Ok(BeforeToolMiddlewareOutcome::Dispatch(
+        apply_runtime_arguments(call, effective_call.arguments)?,
+    ))
+}
+
+async fn apply_after_tool_middleware(
+    session: &Session,
+    call: &ToolCall,
+    result: AnyToolResult,
+    source: &ToolCallSource,
+) -> Result<AnyToolResult, FunctionCallError> {
+    let runtime_call = to_runtime_tool_call(call, source);
+    let runtime_result = to_runtime_tool_result(&result);
+    let decision = session
+        .services
+        .runtime_registry
+        .after_tool_call(runtime_call, runtime_result)
+        .await
+        .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+    match decision {
+        ToolResultDecision::Preserve => Ok(result),
+        ToolResultDecision::Replace(replacement) => {
+            let output = if let Some(text) = replacement.output.as_str() {
+                text.to_string()
+            } else {
+                replacement.output.to_string()
+            };
+            Ok(AnyToolResult {
+                call_id: result.call_id.clone(),
+                payload: result.payload.clone(),
+                result: Box::new(FunctionToolOutput::from_text(
+                    output,
+                    Some(matches!(replacement.status, ToolResultStatus::Success)),
+                )),
+                post_tool_use_payload: None,
+            })
+        }
+    }
+}
+
+fn to_runtime_tool_call(call: &ToolCall, source: &ToolCallSource) -> RuntimeToolCall {
+    RuntimeToolCall {
+        call_id: call.call_id.clone(),
+        tool_name: call.tool_name.to_string(),
+        source: match source {
+            ToolCallSource::Direct => RuntimeToolCallSource::Model,
+            ToolCallSource::CodeMode { .. } => RuntimeToolCallSource::Runtime,
+        },
+        arguments: match &call.payload {
+            ToolPayload::Function { arguments } => serde_json::from_str(arguments)
+                .unwrap_or_else(|_| serde_json::Value::String(arguments.clone())),
+            ToolPayload::ToolSearch { arguments } => serde_json::to_value(arguments)
+                .unwrap_or_else(|err| serde_json::Value::String(err.to_string())),
+            ToolPayload::Custom { input } => serde_json::Value::String(input.clone()),
+        },
+    }
+}
+
+fn apply_runtime_arguments(
+    mut call: ToolCall,
+    arguments: serde_json::Value,
+) -> Result<ToolCall, FunctionCallError> {
+    call.payload = match call.payload {
+        ToolPayload::Function { .. } => ToolPayload::Function {
+            arguments: runtime_arguments_to_string(arguments),
+        },
+        ToolPayload::Custom { .. } => ToolPayload::Custom {
+            input: runtime_arguments_to_string(arguments),
+        },
+        ToolPayload::ToolSearch { .. } => {
+            let arguments: SearchToolCallParams =
+                serde_json::from_value(arguments).map_err(|err| {
+                    FunctionCallError::RespondToModel(format!(
+                        "runtime tool middleware returned invalid tool_search arguments: {err}"
+                    ))
+                })?;
+            ToolPayload::ToolSearch { arguments }
+        }
+    };
+    Ok(call)
+}
+
+fn runtime_arguments_to_string(arguments: serde_json::Value) -> String {
+    match arguments {
+        serde_json::Value::String(value) => value,
+        other => other.to_string(),
+    }
+}
+
+fn blocked_tool_result(call: &ToolCall, reason: String) -> AnyToolResult {
+    AnyToolResult {
+        call_id: call.call_id.clone(),
+        payload: call.payload.clone(),
+        result: Box::new(FunctionToolOutput::from_text(reason, Some(false))),
+        post_tool_use_payload: None,
+    }
+}
+
+fn to_runtime_tool_result(result: &AnyToolResult) -> RuntimeToolResult {
+    let response_item = result
+        .result
+        .to_response_item(&result.call_id, &result.payload);
+    RuntimeToolResult {
+        call_id: result.call_id.clone(),
+        status: if result.result.success_for_logging() {
+            ToolResultStatus::Success
+        } else {
+            ToolResultStatus::Failed
+        },
+        output: serde_json::to_value(response_item)
+            .unwrap_or_else(|err| serde_json::Value::String(err.to_string())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,6 +683,13 @@ mod tests {
     struct ImmediateHandler {
         tool_name: codex_tools::ToolName,
     }
+    struct RecordingHandler {
+        tool_name: codex_tools::ToolName,
+        payloads: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+    struct RepairArgumentsMiddleware;
+    struct BlockArgumentsMiddleware;
+    struct NormalizeResultMiddleware;
 
     impl ToolExecutor<ToolInvocation> for ImmediateHandler {
         fn tool_name(&self) -> codex_tools::ToolName {
@@ -539,6 +718,152 @@ mod tests {
     }
 
     impl CoreToolRuntime for ImmediateHandler {}
+
+    #[async_trait::async_trait]
+    impl ToolExecutor<ToolInvocation> for RecordingHandler {
+        fn tool_name(&self) -> codex_tools::ToolName {
+            self.tool_name.clone()
+        }
+
+        fn spec(&self) -> codex_tools::ToolSpec {
+            codex_tools::ToolSpec::Function(codex_tools::ResponsesApiTool {
+                name: self.tool_name.name.clone(),
+                description: "Recording test tool.".to_string(),
+                strict: false,
+                defer_loading: None,
+                parameters: codex_tools::JsonSchema::default(),
+                output_schema: None,
+            })
+        }
+
+        async fn handle(
+            &self,
+            invocation: ToolInvocation,
+        ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+            if let ToolPayload::Function { arguments } = invocation.payload {
+                self.payloads
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(arguments);
+            }
+            Ok(Box::new(FunctionToolOutput::from_text(
+                "ok".to_string(),
+                Some(true),
+            )))
+        }
+    }
+
+    impl CoreToolRuntime for RecordingHandler {}
+
+    impl codex_runtime_api::ToolMiddleware for RepairArgumentsMiddleware {
+        fn id(&self) -> codex_runtime_api::ToolMiddlewareId {
+            codex_runtime_api::ToolMiddlewareId::new("test.repair_arguments")
+        }
+
+        async fn before_tool_call(
+            &self,
+            _call: codex_runtime_api::ToolCall,
+        ) -> Result<codex_runtime_api::ToolCallDecision, codex_runtime_api::ToolMiddlewareError>
+        {
+            Ok(codex_runtime_api::ToolCallDecision::Repair {
+                repaired_arguments: serde_json::json!({"fixed": true}),
+            })
+        }
+
+        async fn after_tool_call(
+            &self,
+            _call: codex_runtime_api::ToolCall,
+            _result: codex_runtime_api::ToolResult,
+        ) -> Result<codex_runtime_api::ToolResultDecision, codex_runtime_api::ToolMiddlewareError>
+        {
+            Ok(codex_runtime_api::ToolResultDecision::Preserve)
+        }
+    }
+
+    impl codex_runtime_api::ToolMiddleware for BlockArgumentsMiddleware {
+        fn id(&self) -> codex_runtime_api::ToolMiddlewareId {
+            codex_runtime_api::ToolMiddlewareId::new("test.block_arguments")
+        }
+
+        async fn before_tool_call(
+            &self,
+            _call: codex_runtime_api::ToolCall,
+        ) -> Result<codex_runtime_api::ToolCallDecision, codex_runtime_api::ToolMiddlewareError>
+        {
+            Ok(codex_runtime_api::ToolCallDecision::Block {
+                reason: "blocked by runtime middleware".to_string(),
+            })
+        }
+
+        async fn after_tool_call(
+            &self,
+            _call: codex_runtime_api::ToolCall,
+            _result: codex_runtime_api::ToolResult,
+        ) -> Result<codex_runtime_api::ToolResultDecision, codex_runtime_api::ToolMiddlewareError>
+        {
+            Ok(codex_runtime_api::ToolResultDecision::Preserve)
+        }
+    }
+
+    impl codex_runtime_api::ToolMiddleware for NormalizeResultMiddleware {
+        fn id(&self) -> codex_runtime_api::ToolMiddlewareId {
+            codex_runtime_api::ToolMiddlewareId::new("test.normalize_result")
+        }
+
+        async fn before_tool_call(
+            &self,
+            _call: codex_runtime_api::ToolCall,
+        ) -> Result<codex_runtime_api::ToolCallDecision, codex_runtime_api::ToolMiddlewareError>
+        {
+            Ok(codex_runtime_api::ToolCallDecision::Continue)
+        }
+
+        async fn after_tool_call(
+            &self,
+            _call: codex_runtime_api::ToolCall,
+            result: codex_runtime_api::ToolResult,
+        ) -> Result<codex_runtime_api::ToolResultDecision, codex_runtime_api::ToolMiddlewareError>
+        {
+            Ok(codex_runtime_api::ToolResultDecision::Replace(
+                codex_runtime_api::ToolResult {
+                    call_id: result.call_id,
+                    status: codex_runtime_api::ToolResultStatus::Success,
+                    output: serde_json::Value::String("normalized output".to_string()),
+                },
+            ))
+        }
+    }
+
+    struct FailingBeforeToolMiddleware;
+
+    impl codex_runtime_api::ToolMiddleware for FailingBeforeToolMiddleware {
+        fn id(&self) -> codex_runtime_api::ToolMiddlewareId {
+            codex_runtime_api::ToolMiddlewareId::new("test.failing_before_tool")
+        }
+
+        async fn before_tool_call(
+            &self,
+            _call: codex_runtime_api::ToolCall,
+        ) -> Result<codex_runtime_api::ToolCallDecision, codex_runtime_api::ToolMiddlewareError>
+        {
+            Err(codex_runtime_api::RuntimeExtensionErrorInfo::new(
+                codex_runtime_api::RuntimeCapability::ToolMiddleware,
+                "test.failing_before_tool",
+                codex_runtime_api::RuntimeExtensionPhase::ToolBeforeCall,
+                "runtime policy rejected arguments",
+                "repair arguments or return Block with a model-visible reason",
+            ))
+        }
+
+        async fn after_tool_call(
+            &self,
+            _call: codex_runtime_api::ToolCall,
+            _result: codex_runtime_api::ToolResult,
+        ) -> Result<codex_runtime_api::ToolResultDecision, codex_runtime_api::ToolMiddlewareError>
+        {
+            Ok(codex_runtime_api::ToolResultDecision::Preserve)
+        }
+    }
 
     struct CancellationCleanupHandler {
         tool_name: codex_tools::ToolName,
@@ -654,6 +979,210 @@ mod tests {
                     .push(outcome);
             })
         }
+    }
+
+    #[tokio::test]
+    async fn runtime_tool_middleware_repairs_arguments_before_executor() -> anyhow::Result<()> {
+        let (mut session, turn_context) = crate::session::tests::make_session_and_context().await;
+        let mut builder = codex_runtime_api::RuntimeRegistry::builder();
+        builder
+            .tool_middleware(RepairArgumentsMiddleware)
+            .expect("register repair middleware");
+        session.services.runtime_registry = builder.build();
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
+        let tool_name = codex_tools::ToolName::plain("recording_tool");
+        let payloads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let handler = Arc::new(RecordingHandler {
+            tool_name: tool_name.clone(),
+            payloads: Arc::clone(&payloads),
+        }) as Arc<dyn CoreToolRuntime>;
+        let router = Arc::new(ToolRouter::from_parts(
+            ToolRegistry::from_tools([handler]),
+            Vec::new(),
+        ));
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let runtime = ToolCallRuntime::new(router, session, turn_context, tracker);
+        let call = ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{malformed".to_string(),
+            },
+        };
+
+        let response = runtime
+            .handle_tool_call(call, CancellationToken::new())
+            .await?;
+
+        assert_eq!(
+            response,
+            ResponseInputItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: FunctionCallOutputPayload {
+                    body: FunctionCallOutputBody::Text("ok".to_string()),
+                    success: Some(true),
+                },
+            }
+        );
+        let actual = payloads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(actual, vec!["{\"fixed\":true}".to_string()]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_tool_middleware_blocks_before_executor() -> anyhow::Result<()> {
+        let (mut session, turn_context) = crate::session::tests::make_session_and_context().await;
+        let mut builder = codex_runtime_api::RuntimeRegistry::builder();
+        builder
+            .tool_middleware(BlockArgumentsMiddleware)
+            .expect("register block middleware");
+        session.services.runtime_registry = builder.build();
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
+        let tool_name = codex_tools::ToolName::plain("recording_tool");
+        let payloads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let handler = Arc::new(RecordingHandler {
+            tool_name: tool_name.clone(),
+            payloads: Arc::clone(&payloads),
+        }) as Arc<dyn CoreToolRuntime>;
+        let router = Arc::new(ToolRouter::from_parts(
+            ToolRegistry::from_tools([handler]),
+            Vec::new(),
+        ));
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let runtime = ToolCallRuntime::new(router, session, turn_context, tracker);
+        let call = ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        };
+
+        let response = runtime
+            .handle_tool_call(call, CancellationToken::new())
+            .await?;
+
+        assert_eq!(
+            response,
+            ResponseInputItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: FunctionCallOutputPayload {
+                    body: FunctionCallOutputBody::Text("blocked by runtime middleware".to_string()),
+                    success: Some(false),
+                },
+            }
+        );
+        let actual = payloads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(actual, Vec::<String>::new());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_tool_middleware_failure_surfaces_before_executor() -> anyhow::Result<()> {
+        let (mut session, turn_context) = crate::session::tests::make_session_and_context().await;
+        let mut builder = codex_runtime_api::RuntimeRegistry::builder();
+        builder
+            .tool_middleware(FailingBeforeToolMiddleware)
+            .expect("register failing middleware");
+        session.services.runtime_registry = builder.build();
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
+        let tool_name = codex_tools::ToolName::plain("recording_tool");
+        let payloads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let handler = Arc::new(RecordingHandler {
+            tool_name: tool_name.clone(),
+            payloads: Arc::clone(&payloads),
+        }) as Arc<dyn CoreToolRuntime>;
+        let router = Arc::new(ToolRouter::from_parts(
+            ToolRegistry::from_tools([handler]),
+            Vec::new(),
+        ));
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let runtime = ToolCallRuntime::new(router, session, turn_context, tracker);
+        let call = ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        };
+
+        let response = runtime
+            .handle_tool_call(call, CancellationToken::new())
+            .await?;
+
+        assert_eq!(
+            response,
+            ResponseInputItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: FunctionCallOutputPayload {
+                    body: FunctionCallOutputBody::Text(
+                        "ToolMiddleware failed during ToolBeforeCall: runtime policy rejected arguments. Fix: repair arguments or return Block with a model-visible reason"
+                            .to_string(),
+                    ),
+                    success: Some(false),
+                },
+            }
+        );
+        let actual = payloads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(actual, Vec::<String>::new());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_tool_middleware_normalizes_result_after_executor() -> anyhow::Result<()> {
+        let (mut session, turn_context) = crate::session::tests::make_session_and_context().await;
+        let mut builder = codex_runtime_api::RuntimeRegistry::builder();
+        builder
+            .tool_middleware(NormalizeResultMiddleware)
+            .expect("register normalize middleware");
+        session.services.runtime_registry = builder.build();
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
+        let tool_name = codex_tools::ToolName::plain("test_tool");
+        let handler = Arc::new(ImmediateHandler {
+            tool_name: tool_name.clone(),
+        }) as Arc<dyn CoreToolRuntime>;
+        let router = Arc::new(ToolRouter::from_parts(
+            ToolRegistry::from_tools([handler]),
+            Vec::new(),
+        ));
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let runtime = ToolCallRuntime::new(router, session, turn_context, tracker);
+        let call = ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        };
+
+        let response = runtime
+            .handle_tool_call(call, CancellationToken::new())
+            .await?;
+
+        assert_eq!(
+            response,
+            ResponseInputItem::FunctionCallOutput {
+                call_id: "call-1".to_string(),
+                output: FunctionCallOutputPayload {
+                    body: FunctionCallOutputBody::Text("normalized output".to_string()),
+                    success: Some(true),
+                },
+            }
+        );
+        Ok(())
     }
 
     #[tokio::test]
