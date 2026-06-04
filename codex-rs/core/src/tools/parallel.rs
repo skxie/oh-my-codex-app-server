@@ -397,7 +397,9 @@ async fn apply_before_tool_middleware_with_timeout(
                 session.services.runtime_registry.tool_middleware_id().to_string(),
                 RuntimeExtensionPhase::ToolBeforeCall,
                 format!("middleware exceeded {}ms timeout", timeout_duration.as_millis()),
+                "the middleware waited too long before returning a decision",
                 "return a before-call decision promptly, or block the call with a model-visible reason",
+                Some("tool-middleware-before-timeout"),
             )
             .to_string(),
         )
@@ -476,7 +478,9 @@ async fn apply_after_tool_middleware_with_timeout(
                     "middleware exceeded {}ms timeout",
                     timeout_duration.as_millis()
                 ),
+                "the middleware waited too long before returning a result decision",
                 "return an after-call decision promptly, or preserve the original tool result",
+                Some("tool-middleware-after-timeout"),
             )
             .to_string(),
         )
@@ -941,7 +945,9 @@ mod tests {
                 "test.failing_before_tool",
                 codex_runtime_api::RuntimeExtensionPhase::ToolBeforeCall,
                 "runtime policy rejected arguments",
+                "the middleware rejected the call instead of repairing or blocking it",
                 "repair arguments or return Block with a model-visible reason",
+                Some("tool-middleware-before-error"),
             ))
         }
 
@@ -1215,7 +1221,7 @@ mod tests {
                 call_id: "call-1".to_string(),
                 output: FunctionCallOutputPayload {
                     body: FunctionCallOutputBody::Text(
-                        "ToolMiddleware `test.failing_before_tool` failed during ToolBeforeCall: runtime policy rejected arguments. Fix: repair arguments or return Block with a model-visible reason"
+                        "ToolMiddleware `test.failing_before_tool` failed during ToolBeforeCall: runtime policy rejected arguments. Likely cause: the middleware rejected the call instead of repairing or blocking it. Fix: repair arguments or return Block with a model-visible reason. Docs: tool-middleware-before-error"
                             .to_string(),
                     ),
                     success: Some(false),
@@ -1307,7 +1313,7 @@ mod tests {
         assert_eq!(
             err,
             FunctionCallError::RespondToModel(
-                "ToolMiddleware `test.delayed_tool_middleware` failed during ToolBeforeCall: middleware exceeded 1ms timeout. Fix: return a before-call decision promptly, or block the call with a model-visible reason"
+                "ToolMiddleware `test.delayed_tool_middleware` failed during ToolBeforeCall: middleware exceeded 1ms timeout. Likely cause: the middleware waited too long before returning a decision. Fix: return a before-call decision promptly, or block the call with a model-visible reason. Docs: tool-middleware-before-timeout"
                     .to_string()
             )
         );
@@ -1355,7 +1361,7 @@ mod tests {
         assert_eq!(
             err,
             FunctionCallError::RespondToModel(
-                "ToolMiddleware `test.delayed_tool_middleware` failed during ToolAfterCall: middleware exceeded 1ms timeout. Fix: return an after-call decision promptly, or preserve the original tool result"
+                "ToolMiddleware `test.delayed_tool_middleware` failed during ToolAfterCall: middleware exceeded 1ms timeout. Likely cause: the middleware waited too long before returning a result decision. Fix: return an after-call decision promptly, or preserve the original tool result. Docs: tool-middleware-after-timeout"
                     .to_string()
             )
         );

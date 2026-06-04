@@ -33,7 +33,9 @@ pub struct RuntimeExtensionErrorInfo {
     pub contributor_id: RuntimeContributorId,
     pub phase: RuntimeExtensionPhase,
     pub what_happened: String,
+    pub why_likely: String,
     pub how_to_fix: String,
+    pub docs_anchor: Option<String>,
 }
 
 impl RuntimeExtensionErrorInfo {
@@ -42,14 +44,18 @@ impl RuntimeExtensionErrorInfo {
         contributor_id: impl Into<RuntimeContributorId>,
         phase: RuntimeExtensionPhase,
         what_happened: impl Into<String>,
+        why_likely: impl Into<String>,
         how_to_fix: impl Into<String>,
+        docs_anchor: Option<&str>,
     ) -> Self {
         Self {
             capability,
             contributor_id: contributor_id.into(),
             phase,
             what_happened: what_happened.into(),
+            why_likely: why_likely.into(),
             how_to_fix: how_to_fix.into(),
+            docs_anchor: docs_anchor.map(ToString::to_string),
         }
     }
 }
@@ -58,9 +64,18 @@ impl std::fmt::Display for RuntimeExtensionErrorInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{:?} `{}` failed during {:?}: {}. Fix: {}",
-            self.capability, self.contributor_id, self.phase, self.what_happened, self.how_to_fix
-        )
+            "{:?} `{}` failed during {:?}: {}. Likely cause: {}. Fix: {}",
+            self.capability,
+            self.contributor_id,
+            self.phase,
+            self.what_happened,
+            self.why_likely,
+            self.how_to_fix
+        )?;
+        if let Some(docs_anchor) = &self.docs_anchor {
+            write!(f, ". Docs: {docs_anchor}")?;
+        }
+        Ok(())
     }
 }
 
@@ -97,7 +112,9 @@ impl RuntimeRegistryBuildError {
                 format!(
                     "runtime capability already has implementation `{existing_contributor_id}`"
                 ),
+                "the builder registered the same runtime capability more than once",
                 "register only one active implementation for this runtime capability",
+                Some("runtime-registry-duplicate-capability"),
             ),
         }
     }

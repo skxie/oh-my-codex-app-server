@@ -66,8 +66,10 @@ fn duplicate_registration_error_maps_to_runtime_extension_error_info() {
         contributor_id: RuntimeContributorId::new("second.policy"),
         phase: RuntimeExtensionPhase::Registration,
         what_happened: "runtime capability already has implementation `first.policy`".to_string(),
+        why_likely: "the builder registered the same runtime capability more than once".to_string(),
         how_to_fix: "register only one active implementation for this runtime capability"
             .to_string(),
+        docs_anchor: Some("runtime-registry-duplicate-capability".to_string()),
     };
     assert_eq!(actual, expected);
 }
@@ -218,7 +220,9 @@ fn runtime_extension_error_info_compares_as_a_whole_object() {
         "fake.tool_middleware",
         RuntimeExtensionPhase::ToolBeforeCall,
         "middleware returned repaired arguments that are not valid JSON for fake_tool",
+        "the middleware produced arguments that no longer match the target tool schema",
         "return a JSON object matching the tool schema, or block the call",
+        Some("tool-middleware-argument-repair"),
     );
 
     let expected = RuntimeExtensionErrorInfo {
@@ -228,7 +232,10 @@ fn runtime_extension_error_info_compares_as_a_whole_object() {
         what_happened:
             "middleware returned repaired arguments that are not valid JSON for fake_tool"
                 .to_string(),
+        why_likely: "the middleware produced arguments that no longer match the target tool schema"
+            .to_string(),
         how_to_fix: "return a JSON object matching the tool schema, or block the call".to_string(),
+        docs_anchor: Some("tool-middleware-argument-repair".to_string()),
     };
     assert_eq!(actual, expected);
 }

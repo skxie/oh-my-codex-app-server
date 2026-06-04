@@ -249,7 +249,9 @@ fn runtime_extension_invalid_request(
     contributor_id: String,
     phase: RuntimeExtensionPhase,
     what_happened: impl Into<String>,
+    why_likely: impl Into<String>,
     how_to_fix: impl Into<String>,
+    docs_anchor: Option<&str>,
 ) -> CodexErr {
     CodexErr::InvalidRequest(
         RuntimeExtensionErrorInfo::new(
@@ -257,7 +259,9 @@ fn runtime_extension_invalid_request(
             contributor_id,
             phase,
             what_happened,
+            why_likely,
             how_to_fix,
+            docs_anchor,
         )
         .to_string(),
     )
@@ -1029,7 +1033,9 @@ impl ModelClient {
                     "returned unsupported api kind {:?} with mapper {:?}; only Responses is wired to the current transport",
                     request.api_kind, request.response_mapper
                 ),
+                "the adapter selected an API kind or mapper that is not wired to this transport path",
                 "return api_kind Responses with mapper Responses for the Responses request builder",
+                Some("model-request-adapter-unsupported-api-kind"),
             ));
         }
         serde_json::from_value(request.body).map_err(|error| {
@@ -1041,7 +1047,9 @@ impl ModelClient {
                     .to_string(),
                 RuntimeExtensionPhase::ModelRequest,
                 format!("returned invalid Responses request body: {error}"),
+                "the adapter returned JSON that does not match Codex's Responses request schema",
                 "return a JSON body that deserializes to the Codex Responses request shape",
+                Some("model-request-adapter-invalid-responses-body"),
             )
         })
     }
@@ -1084,7 +1092,9 @@ impl ModelClient {
                         "returned unsupported response mapper {:?}",
                         request.response_mapper
                     ),
+                    "the adapter requested a mapper without a Codex stream parser for this transport",
                     "select Responses or ChatCompletions until this transport supports the requested mapper",
+                    Some("protocol-response-mapper-unsupported"),
                 ));
             }
         };
@@ -1646,7 +1656,9 @@ impl ModelClientSession {
                                 .to_string(),
                             RuntimeExtensionPhase::ModelRequest,
                             format!("returned invalid Responses request body: {error}"),
+                            "the adapter returned JSON that does not match Codex's Responses request schema",
                             "return a JSON body that deserializes to the Codex Responses request shape",
+                            Some("model-request-adapter-invalid-responses-body"),
                         )
                     })?;
                 client.stream_request(responses_request, options).await

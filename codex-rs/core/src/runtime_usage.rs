@@ -40,7 +40,9 @@ pub(crate) async fn map_token_usage(
                     registry.usage_metadata_mapper_id().to_string(),
                     RuntimeExtensionPhase::UsageMapping,
                     message,
+                    "the mapper returned token counts outside app-server TokenUsage integer bounds",
                     "return token counts that fit the app-server TokenUsage event fields",
+                    Some("usage-metadata-invalid-token-count"),
                 )
                 .to_string(),
             )
@@ -66,7 +68,9 @@ fn validate_raw_provider_metadata(
                 format!(
                     "raw provider metadata is {size} bytes, exceeding {MAX_RAW_PROVIDER_METADATA_BYTES} byte limit"
                 ),
+                "the provider response included opaque metadata larger than the bounded runtime metadata envelope",
                 "drop, summarize, or map provider metadata before usage normalization",
+                Some("usage-metadata-oversized-raw-provider-metadata"),
             )
             .to_string(),
         ));
@@ -149,7 +153,9 @@ mod tests {
                 "test.failing_usage_mapper",
                 RuntimeExtensionPhase::UsageMapping,
                 "provider metadata was missing cache counters",
+                "the provider metadata did not include fields required by this mapper",
                 "return fallback usage or provider cache counters",
+                Some("usage-metadata-mapper-error"),
             ))
         }
     }
@@ -203,7 +209,7 @@ mod tests {
         match err {
             CodexErr::InvalidRequest(message) => assert_eq!(
                 message,
-                "UsageMetadataMapper `test.failing_usage_mapper` failed during UsageMapping: provider metadata was missing cache counters. Fix: return fallback usage or provider cache counters"
+                "UsageMetadataMapper `test.failing_usage_mapper` failed during UsageMapping: provider metadata was missing cache counters. Likely cause: the provider metadata did not include fields required by this mapper. Fix: return fallback usage or provider cache counters. Docs: usage-metadata-mapper-error"
             ),
             other => panic!("unexpected error: {other}"),
         }
@@ -227,7 +233,7 @@ mod tests {
         match err {
             CodexErr::InvalidRequest(message) => assert_eq!(
                 message,
-                "UsageMetadataMapper `test.overflow_usage_mapper` failed during UsageMapping: returned prompt_tokens value that exceeds i64: 18446744073709551615. Fix: return token counts that fit the app-server TokenUsage event fields"
+                "UsageMetadataMapper `test.overflow_usage_mapper` failed during UsageMapping: returned prompt_tokens value that exceeds i64: 18446744073709551615. Likely cause: the mapper returned token counts outside app-server TokenUsage integer bounds. Fix: return token counts that fit the app-server TokenUsage event fields. Docs: usage-metadata-invalid-token-count"
             ),
             other => panic!("unexpected error: {other}"),
         }
@@ -249,7 +255,7 @@ mod tests {
         match err {
             CodexErr::InvalidRequest(message) => assert_eq!(
                 message,
-                "UsageMetadataMapper `codex.default.usage_metadata_mapper` failed during UsageMapping: raw provider metadata is 40012 bytes, exceeding 40000 byte limit. Fix: drop, summarize, or map provider metadata before usage normalization"
+                "UsageMetadataMapper `codex.default.usage_metadata_mapper` failed during UsageMapping: raw provider metadata is 40012 bytes, exceeding 40000 byte limit. Likely cause: the provider response included opaque metadata larger than the bounded runtime metadata envelope. Fix: drop, summarize, or map provider metadata before usage normalization. Docs: usage-metadata-oversized-raw-provider-metadata"
             ),
             other => panic!("unexpected error: {other}"),
         }

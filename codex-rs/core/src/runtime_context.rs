@@ -126,7 +126,9 @@ fn validate_context_blocks(registry: &RuntimeRegistry, blocks: &[ContextBlock]) 
                         "context block `{}` is {size} bytes, exceeding {MAX_CONTEXT_BLOCK_BYTES} byte limit",
                         block.id
                     ),
+                    "the contributor returned a block larger than the bounded prompt-fragment limit",
                     "split, summarize, or omit large contributor context blocks before prompt assembly",
+                    Some("context-contributor-oversized-block"),
                 )
                 .to_string(),
             ));
@@ -587,7 +589,7 @@ mod tests {
         match err {
             CodexErr::InvalidRequest(message) => assert_eq!(
                 message,
-                "ContextContributor `test.oversized_context_contributor` failed during ContextContribution: context block `too-large` is 40001 bytes, exceeding 40000 byte limit. Fix: split, summarize, or omit large contributor context blocks before prompt assembly"
+                "ContextContributor `test.oversized_context_contributor` failed during ContextContribution: context block `too-large` is 40001 bytes, exceeding 40000 byte limit. Likely cause: the contributor returned a block larger than the bounded prompt-fragment limit. Fix: split, summarize, or omit large contributor context blocks before prompt assembly. Docs: context-contributor-oversized-block"
             ),
             other => panic!("unexpected error: {other}"),
         }
@@ -611,7 +613,9 @@ mod tests {
                     "test.failing_policy",
                     RuntimeExtensionPhase::ContextSelection,
                     "policy rejected candidate graph",
+                    "the policy rejected or produced an invalid context candidate graph",
                     "keep current user input and complete tool/result pairs",
+                    Some("context-policy-selection-error"),
                 ))
             }
         }
@@ -633,7 +637,7 @@ mod tests {
         match err {
             CodexErr::InvalidRequest(message) => assert_eq!(
                 message,
-                "ContextPolicy `test.failing_policy` failed during ContextSelection: policy rejected candidate graph. Fix: keep current user input and complete tool/result pairs"
+                "ContextPolicy `test.failing_policy` failed during ContextSelection: policy rejected candidate graph. Likely cause: the policy rejected or produced an invalid context candidate graph. Fix: keep current user input and complete tool/result pairs. Docs: context-policy-selection-error"
             ),
             other => panic!("unexpected error: {other}"),
         }
