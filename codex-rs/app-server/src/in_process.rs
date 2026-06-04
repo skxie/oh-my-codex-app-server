@@ -910,6 +910,9 @@ mod tests {
                         .as_u64()
                         .expect("reasoning_tokens should be u64"),
                 ),
+                total_tokens: usage
+                    .get("total_tokens")
+                    .and_then(serde_json::Value::as_u64),
             }))
         }
     }

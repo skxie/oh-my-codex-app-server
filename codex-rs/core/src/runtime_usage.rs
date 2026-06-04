@@ -41,7 +41,7 @@ pub(crate) async fn map_token_usage(
                     RuntimeExtensionPhase::UsageMapping,
                     message,
                     "the mapper returned token counts outside app-server TokenUsage integer bounds",
-                    "return token counts that fit the app-server TokenUsage event fields",
+                    "return token counts that fit the app-server TokenUsage fields",
                     Some("usage-metadata-invalid-token-count"),
                 )
                 .to_string(),
@@ -91,6 +91,7 @@ fn usage_metadata_from_token_usage(token_usage: &TokenUsage) -> CodexResult<Usag
             token_usage.reasoning_output_tokens,
             "reasoning_output_tokens",
         )?),
+        total_tokens: Some(to_u64(token_usage.total_tokens, "total_tokens")?),
     })
 }
 
@@ -107,13 +108,18 @@ fn token_usage_from_usage_metadata(metadata: UsageMetadata) -> Result<TokenUsage
         .map(|value| to_i64(value, "reasoning_tokens"))
         .transpose()?
         .unwrap_or_default();
+    let total_tokens = metadata
+        .total_tokens
+        .map(|value| to_i64(value, "total_tokens"))
+        .transpose()?
+        .unwrap_or(input_tokens + output_tokens + reasoning_output_tokens);
 
     Ok(TokenUsage {
         input_tokens,
         cached_input_tokens,
         output_tokens,
         reasoning_output_tokens,
-        total_tokens: input_tokens + output_tokens + reasoning_output_tokens,
+        total_tokens,
     })
 }
 
@@ -177,6 +183,7 @@ mod tests {
                 cached_prompt_tokens: None,
                 cache_miss_prompt_tokens: None,
                 reasoning_tokens: None,
+                total_tokens: None,
             }))
         }
     }
@@ -233,7 +240,7 @@ mod tests {
         match err {
             CodexErr::InvalidRequest(message) => assert_eq!(
                 message,
-                "UsageMetadataMapper `test.overflow_usage_mapper` failed during UsageMapping: returned prompt_tokens value that exceeds i64: 18446744073709551615. Likely cause: the mapper returned token counts outside app-server TokenUsage integer bounds. Fix: return token counts that fit the app-server TokenUsage event fields. Docs: usage-metadata-invalid-token-count"
+                "UsageMetadataMapper `test.overflow_usage_mapper` failed during UsageMapping: returned prompt_tokens value that exceeds i64: 18446744073709551615. Likely cause: the mapper returned token counts outside app-server TokenUsage integer bounds. Fix: return token counts that fit the app-server TokenUsage fields. Docs: usage-metadata-invalid-token-count"
             ),
             other => panic!("unexpected error: {other}"),
         }
@@ -259,5 +266,24 @@ mod tests {
             ),
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[tokio::test]
+    async fn default_usage_mapper_preserves_provider_total_tokens() {
+        let registry = RuntimeRegistry::default();
+        let token_usage = TokenUsage {
+            input_tokens: 10,
+            cached_input_tokens: 4,
+            output_tokens: 20,
+            reasoning_output_tokens: 5,
+            total_tokens: 30,
+        };
+
+        let mapped = map_token_usage(&registry, &token_usage, /*raw_provider_metadata*/ None)
+            .await
+            .expect("default usage mapper should succeed")
+            .expect("default usage mapper should return fallback usage");
+
+        assert_eq!(mapped, token_usage);
     }
 }

@@ -144,6 +144,7 @@ impl UsageMetadataMapper for CookbookUsageMetadataMapper {
             cached_prompt_tokens: cache_hit.as_u64(),
             cache_miss_prompt_tokens: Some(20),
             reasoning_tokens: Some(7),
+            total_tokens: Some(132),
         }))
     }
 }
@@ -260,6 +261,7 @@ async fn usage_metadata_mapper() {
             cached_prompt_tokens: Some(80),
             cache_miss_prompt_tokens: Some(20),
             reasoning_tokens: Some(7),
+            total_tokens: Some(132),
         }
     );
 }

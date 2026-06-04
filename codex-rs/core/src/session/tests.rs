@@ -2406,6 +2406,7 @@ async fn runtime_usage_metadata_mapper_changes_recorded_token_usage() {
                 cached_prompt_tokens: Some(80),
                 cache_miss_prompt_tokens: Some(20),
                 reasoning_tokens: Some(10),
+                total_tokens: Some(155),
             }))
         }
     }
@@ -2434,14 +2435,14 @@ async fn runtime_usage_metadata_mapper_changes_recorded_token_usage() {
             cached_input_tokens: 80,
             output_tokens: 50,
             reasoning_output_tokens: 10,
-            total_tokens: 160,
+            total_tokens: 155,
         },
         last_token_usage: TokenUsage {
             input_tokens: 100,
             cached_input_tokens: 80,
             output_tokens: 50,
             reasoning_output_tokens: 10,
-            total_tokens: 160,
+            total_tokens: 155,
         },
         model_context_window: turn_context.model_context_window(),
     };

@@ -17,6 +17,13 @@ pub struct UsageMetadata {
     pub cached_prompt_tokens: Option<u64>,
     pub cache_miss_prompt_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
+    /// Provider-reported total tokens, when available.
+    ///
+    /// Some providers include reasoning tokens inside completion/output totals
+    /// while still reporting reasoning separately. Runtime mappers should
+    /// preserve the provider total when they are normalizing metadata rather
+    /// than intentionally replacing aggregate accounting.
+    pub total_tokens: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
