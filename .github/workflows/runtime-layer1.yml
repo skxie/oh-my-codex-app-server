@@ -74,5 +74,9 @@ jobs:
           tool: nextest
           version: 0.9.103
 
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.3"
+
       - name: Run Layer 1 pre-push gate
         run: just pre-push-layer1
