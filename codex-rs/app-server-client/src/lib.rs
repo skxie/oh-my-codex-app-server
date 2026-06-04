@@ -403,6 +403,7 @@ impl InProcessClientStartArgs {
             feedback: self.feedback,
             log_db: self.log_db,
             state_db: self.state_db,
+            runtime_registry: codex_runtime_api::RuntimeRegistry::default(),
             environment_manager: self.environment_manager,
             config_warnings: self.config_warnings,
             session_source: self.session_source,

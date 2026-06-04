@@ -63,6 +63,7 @@ use codex_protocol::protocol::TurnAbortedEvent;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout::state_db::StateDbHandle;
+use codex_runtime_api::RuntimeRegistry;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::LocalThreadStore;
 use codex_thread_store::LocalThreadStoreConfig;
@@ -248,6 +249,7 @@ pub(crate) struct ThreadManagerState {
     code_mode_session_provider: Arc<dyn CodeModeSessionProvider>,
     extensions: Arc<ExtensionRegistry<Config>>,
     user_instructions_provider: Arc<dyn UserInstructionsProvider>,
+    runtime_registry: RuntimeRegistry,
     thread_store: Arc<dyn ThreadStore>,
     agent_graph_store: Option<Arc<dyn AgentGraphStore>>,
     attestation_provider: Option<Arc<dyn AttestationProvider>>,
@@ -309,6 +311,7 @@ impl ThreadManager {
         environment_manager: Arc<EnvironmentManager>,
         extensions: Arc<ExtensionRegistry<Config>>,
         user_instructions_provider: Arc<dyn UserInstructionsProvider>,
+        runtime_registry: RuntimeRegistry,
         analytics_events_client: Option<AnalyticsEventsClient>,
         thread_store: Arc<dyn ThreadStore>,
         agent_graph_store: Option<Arc<dyn AgentGraphStore>>,
@@ -349,6 +352,7 @@ impl ThreadManager {
                 },
                 extensions,
                 user_instructions_provider,
+                runtime_registry,
                 thread_store,
                 agent_graph_store,
                 attestation_provider,
@@ -457,6 +461,7 @@ impl ThreadManager {
                 user_instructions_provider: Arc::new(
                     crate::test_support::EmptyUserInstructionsProvider,
                 ),
+                runtime_registry: RuntimeRegistry::default(),
                 thread_store,
                 agent_graph_store,
                 attestation_provider: None,
@@ -1585,7 +1590,7 @@ impl ThreadManagerState {
             mcp_manager: Arc::clone(&self.mcp_manager),
             code_mode_session_provider: Arc::clone(&self.code_mode_session_provider),
             extensions: Arc::clone(&self.extensions),
-            runtime_registry: codex_runtime_api::RuntimeRegistry::default(),
+            runtime_registry: self.runtime_registry.clone(),
             conversation_history: initial_history,
             requested_history_mode: history_mode,
             session_source,

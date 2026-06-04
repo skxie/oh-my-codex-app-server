@@ -894,6 +894,7 @@ pub async fn run_main_with_transport_options(
             feedback: feedback.clone(),
             log_db,
             state_db: state_db.clone(),
+            runtime_registry: codex_runtime_api::RuntimeRegistry::default(),
             config_warnings,
             session_source,
             auth_manager,

@@ -83,6 +83,7 @@ use codex_protocol::auth::AuthMode as LoginAuthMode;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout::StateDbHandle;
+use codex_runtime_api::RuntimeRegistry;
 use codex_state::log_db::LogDbLayer;
 use tokio::sync::Mutex;
 use tokio::sync::Semaphore;
@@ -296,6 +297,7 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) feedback: CodexFeedback,
     pub(crate) log_db: Option<LogDbLayer>,
     pub(crate) state_db: Option<StateDbHandle>,
+    pub(crate) runtime_registry: RuntimeRegistry,
     pub(crate) config_warnings: Vec<ConfigWarningNotification>,
     pub(crate) session_source: SessionSource,
     pub(crate) auth_manager: Arc<AuthManager>,
@@ -319,6 +321,7 @@ impl MessageProcessor {
             feedback,
             log_db,
             state_db,
+            runtime_registry,
             config_warnings,
             session_source,
             auth_manager,
@@ -371,6 +374,7 @@ impl MessageProcessor {
                 Arc::new(CodexHomeUserInstructionsProvider::new(
                     config.codex_home.clone(),
                 )),
+                runtime_registry.clone(),
                 Some(analytics_events_client.clone()),
                 Arc::clone(&thread_store),
                 codex_core::local_agent_graph_store_from_state_db(state_db.as_ref()),

@@ -792,6 +792,7 @@ async fn resume_and_fork_do_not_restore_thread_environments_from_rollout() {
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        codex_runtime_api::RuntimeRegistry::default(),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, /*state_db*/ None),
         /*agent_graph_store*/ None,
@@ -918,6 +919,7 @@ async fn explicit_installation_id_skips_codex_home_file() {
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        codex_runtime_api::RuntimeRegistry::default(),
         /*analytics_events_client*/ None,
         thread_store,
         local_agent_graph_store_from_state_db(state_db.as_ref()),
@@ -959,6 +961,7 @@ async fn resume_active_thread_from_rollout_returns_running_thread() {
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        codex_runtime_api::RuntimeRegistry::default(),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, /*state_db*/ None),
         /*agent_graph_store*/ None,
@@ -1019,6 +1022,7 @@ async fn resume_stopped_thread_from_rollout_spawns_new_thread() {
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        codex_runtime_api::RuntimeRegistry::default(),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, /*state_db*/ None),
         /*agent_graph_store*/ None,
@@ -1086,6 +1090,7 @@ async fn resume_stopped_thread_from_rollout_preserves_thread_source() {
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        codex_runtime_api::RuntimeRegistry::default(),
         /*analytics_events_client*/ None,
         thread_store,
         local_agent_graph_store_from_state_db(state_db.as_ref()),
@@ -1223,6 +1228,7 @@ async fn rollout_path_resume_and_fork_read_history_through_thread_store() {
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        codex_runtime_api::RuntimeRegistry::default(),
         /*analytics_events_client*/ None,
         thread_store.clone(),
         local_agent_graph_store_from_state_db(state_db.as_ref()),
@@ -1328,6 +1334,7 @@ async fn new_uses_active_provider_for_model_refresh() {
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        codex_runtime_api::RuntimeRegistry::default(),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, /*state_db*/ None),
         /*agent_graph_store*/ None,
@@ -1550,6 +1557,7 @@ async fn interrupted_fork_snapshot_does_not_synthesize_turn_id_for_legacy_histor
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        codex_runtime_api::RuntimeRegistry::default(),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, state_db.clone()),
         local_agent_graph_store_from_state_db(state_db.as_ref()),
@@ -1659,6 +1667,7 @@ async fn interrupted_fork_snapshot_preserves_explicit_turn_id() {
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        codex_runtime_api::RuntimeRegistry::default(),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, state_db.clone()),
         local_agent_graph_store_from_state_db(state_db.as_ref()),
@@ -1758,6 +1767,7 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
         empty_extension_registry(),
         Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        codex_runtime_api::RuntimeRegistry::default(),
         /*analytics_events_client*/ None,
         thread_store_from_config(&config, state_db.clone()),
         local_agent_graph_store_from_state_db(state_db.as_ref()),
@@ -1877,4 +1887,106 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
             .count(),
         1,
     );
+}
+#[tokio::test]
+async fn resumed_thread_keeps_paused_goal_paused() -> anyhow::Result<()> {
+    let temp_dir = tempdir().expect("tempdir");
+    let mut config = test_config().await;
+    config.codex_home = temp_dir.path().join("codex-home").abs();
+    config.cwd = config.codex_home.abs();
+    config
+        .features
+        .enable(Feature::Goals)
+        .expect("goals should be enableable in tests");
+    std::fs::create_dir_all(&config.codex_home).expect("create codex home");
+
+    let auth_manager =
+        AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
+    let state_db = init_state_db(&config).await;
+    let manager = ThreadManager::new(
+        &config,
+        auth_manager.clone(),
+        SessionSource::Exec,
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        empty_extension_registry(),
+        Arc::new(crate::test_support::EmptyUserInstructionsProvider),
+        codex_runtime_api::RuntimeRegistry::default(),
+        /*analytics_events_client*/ None,
+        thread_store_from_config(&config, state_db.clone()),
+        local_agent_graph_store_from_state_db(state_db.as_ref()),
+        TEST_INSTALLATION_ID.to_string(),
+        /*attestation_provider*/ None,
+        /*external_time_provider*/ None,
+    );
+
+    let source = manager
+        .resume_thread_with_history(
+            config.clone(),
+            InitialHistory::Forked(vec![RolloutItem::ResponseItem(user_msg("keep working"))]),
+            auth_manager.clone(),
+            /*parent_trace*/ None,
+        )
+        .await
+        .expect("create source thread");
+    let source_path = source
+        .thread
+        .rollout_path()
+        .expect("source rollout path should exist");
+    source.thread.flush_rollout().await?;
+    let state_db = source
+        .thread
+        .state_db()
+        .expect("source thread should have a state db");
+    state_db
+        .thread_goals()
+        .replace_thread_goal(
+            source.thread_id,
+            "Keep working until the task is done",
+            codex_state::ThreadGoalStatus::Paused,
+            /*token_budget*/ None,
+        )
+        .await?;
+    source.thread.shutdown_and_wait().await?;
+    manager.remove_thread(&source.thread_id).await;
+
+    let resumed = manager
+        .resume_thread_from_rollout(
+            config.clone(),
+            source_path,
+            auth_manager,
+            /*parent_trace*/ None,
+        )
+        .await
+        .expect("resume source thread");
+    let goal = state_db
+        .thread_goals()
+        .get_thread_goal(resumed.thread_id)
+        .await?
+        .expect("goal should still exist after resume");
+    assert_eq!(codex_state::ThreadGoalStatus::Paused, goal.status);
+    assert!(
+        resumed
+            .thread
+            .codex
+            .session
+            .active_turn
+            .lock()
+            .await
+            .is_none()
+    );
+
+    resumed.thread.continue_active_goal_if_idle().await?;
+    assert!(
+        resumed
+            .thread
+            .codex
+            .session
+            .active_turn
+            .lock()
+            .await
+            .is_none()
+    );
+
+    resumed.thread.shutdown_and_wait().await?;
+    Ok(())
 }

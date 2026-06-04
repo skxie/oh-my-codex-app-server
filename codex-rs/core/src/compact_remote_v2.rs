@@ -844,6 +844,7 @@ mod tests {
                     reasoning_output_tokens: 5,
                     total_tokens: 123_498,
                 }),
+                raw_provider_metadata: None,
                 end_turn: Some(true),
             }),
         ]);

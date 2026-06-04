@@ -55,6 +55,7 @@ pub async fn build_prompt_input(
         ),
         empty_extension_registry(),
         user_instructions_provider,
+        codex_runtime_api::RuntimeRegistry::default(),
         /*analytics_events_client*/ None,
         thread_store,
         crate::local_agent_graph_store_from_state_db(state_db.as_ref()),

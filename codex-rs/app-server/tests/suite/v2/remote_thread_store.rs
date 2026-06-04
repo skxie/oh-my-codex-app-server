@@ -309,6 +309,7 @@ async fn start_in_process_client(
         feedback: CodexFeedback::new(),
         log_db: None,
         state_db: None,
+        runtime_registry: codex_runtime_api::RuntimeRegistry::default(),
         environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
         config_warnings: Vec::new(),
         session_source: SessionSource::Cli,

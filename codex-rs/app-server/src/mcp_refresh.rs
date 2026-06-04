@@ -245,6 +245,7 @@ mod tests {
                 Arc::new(CodexHomeUserInstructionsProvider::new(
                     good_config.codex_home.clone(),
                 )),
+                codex_runtime_api::RuntimeRegistry::default(),
                 /*analytics_events_client*/ None,
                 Arc::clone(&thread_store),
                 codex_core::local_agent_graph_store_from_state_db(Some(&state_db)),
