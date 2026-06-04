@@ -6,6 +6,8 @@
 
 pub use codex_app_server::in_process::InProcessClientHandle;
 pub use codex_app_server::in_process::InProcessStartArgs;
+pub use codex_app_server_client::AppServerClient;
+pub use codex_app_server_client::AppServerEvent;
 pub use codex_app_server_client::InProcessClientStartArgs;
 
 use codex_runtime_api::RuntimeRegistry;
@@ -61,5 +63,19 @@ impl AppServerBuilder {
     /// Starts the existing in-process Codex app-server runtime.
     pub async fn start(self) -> IoResult<InProcessClientHandle> {
         codex_app_server::in_process::start(self.args).await
+    }
+
+    /// Starts the existing in-process Codex app-server runtime behind the production client facade.
+    ///
+    /// Layer 2 embedders should use this when they want the same typed request,
+    /// event, server request resolution, and shutdown behavior as app-server
+    /// clients, while still constructing the backend through this SDK builder.
+    pub async fn start_client(self) -> IoResult<AppServerClient> {
+        Ok(AppServerClient::InProcess(
+            codex_app_server_client::InProcessAppServerClient::start_from_runtime_start_args(
+                self.args,
+            )
+            .await?,
+        ))
     }
 }

@@ -498,9 +498,18 @@ impl InProcessAppServerClient {
     /// internal event queue is saturated later, server requests are rejected
     /// with overload error instead of being silently dropped.
     pub async fn start(args: InProcessClientStartArgs) -> IoResult<Self> {
+        Self::start_from_runtime_start_args(args.into_runtime_start_args()).await
+    }
+
+    /// Starts the in-process client facade from fully resolved app-server runtime args.
+    ///
+    /// SDK embedders use this after constructing [`InProcessStartArgs`] with a
+    /// custom runtime registry. The resulting client still goes through the
+    /// same facade worker, typed request API, server request resolution, event
+    /// forwarding, and graceful shutdown path as [`Self::start`].
+    pub async fn start_from_runtime_start_args(args: InProcessStartArgs) -> IoResult<Self> {
         let channel_capacity = args.channel_capacity.max(1);
-        let mut handle =
-            codex_app_server::in_process::start(args.into_runtime_start_args()).await?;
+        let mut handle = codex_app_server::in_process::start(args).await?;
         let request_sender = handle.sender();
         let (command_tx, mut command_rx) = mpsc::channel::<ClientCommand>(channel_capacity);
         let (event_tx, event_rx) = mpsc::channel::<InProcessServerEvent>(channel_capacity);

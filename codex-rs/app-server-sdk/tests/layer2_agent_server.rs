@@ -1,6 +1,5 @@
 use anyhow::Context as _;
 use anyhow::anyhow;
-use codex_app_server::in_process::InProcessServerEvent;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigRequirementsReadResponse;
 use codex_app_server_protocol::DynamicToolCallOutputContentItem;
@@ -18,6 +17,8 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput;
 use codex_app_server_sdk::AppServerBuilder;
+use codex_app_server_sdk::AppServerClient;
+use codex_app_server_sdk::AppServerEvent;
 use codex_app_server_sdk::InProcessClientStartArgs;
 use codex_arg0::Arg0DispatchPaths;
 use codex_config::CloudConfigBundleLoader;
@@ -293,14 +294,14 @@ async fn layer2_client_start_args(codex_home: &Path) -> anyhow::Result<InProcess
 }
 
 async fn next_dynamic_tool_call(
-    client: &mut codex_app_server::in_process::InProcessClientHandle,
+    client: &mut AppServerClient,
 ) -> anyhow::Result<(RequestId, DynamicToolCallParams)> {
     loop {
         let event = timeout(Duration::from_secs(60), client.next_event())
             .await
             .context("app-server should emit a dynamic tool request")?
             .context("event stream should stay open")?;
-        if let InProcessServerEvent::ServerRequest(ServerRequest::DynamicToolCall {
+        if let AppServerEvent::ServerRequest(ServerRequest::DynamicToolCall {
             request_id,
             params,
         }) = event
@@ -311,7 +312,7 @@ async fn next_dynamic_tool_call(
 }
 
 async fn read_until_usage_and_completed(
-    client: &mut codex_app_server::in_process::InProcessClientHandle,
+    client: &mut AppServerClient,
 ) -> anyhow::Result<(
     ThreadTokenUsageUpdatedNotification,
     TurnCompletedNotification,
@@ -323,7 +324,7 @@ async fn read_until_usage_and_completed(
             .await
             .context("app-server should emit turn events")?
             .context("event stream should stay open")?;
-        if let InProcessServerEvent::ServerNotification(notification) = event {
+        if let AppServerEvent::ServerNotification(notification) = event {
             match notification {
                 ServerNotification::ThreadTokenUsageUpdated(next_usage) => {
                     usage = Some(next_usage);
@@ -351,7 +352,7 @@ fn value_contains_text(value: &Value, expected: &str) -> bool {
 }
 
 #[tokio::test]
-async fn sdk_starts_runnable_layer2_agent_server_with_codex_and_runtime_capabilities()
+async fn sdk_starts_runnable_layer2_agent_server_client_with_codex_and_runtime_capabilities()
 -> anyhow::Result<()> {
     let server = responses::start_mock_server().await;
     let first_response = responses::sse(vec![
@@ -407,20 +408,18 @@ async fn sdk_starts_runnable_layer2_agent_server_with_codex_and_runtime_capabili
         layer2_client_start_args(codex_home.path()).await?,
     )
     .runtime_registry(registry.build())
-    .start()
+    .start_client()
     .await?;
 
-    let config_response = client
-        .request(ClientRequest::ConfigRequirementsRead {
+    let _config: ConfigRequirementsReadResponse = client
+        .request_typed(ClientRequest::ConfigRequirementsRead {
             request_id: RequestId::Integer(1),
             params: None,
         })
-        .await?
-        .map_err(|error| anyhow!("configRequirements/read should succeed: {error:?}"))?;
-    let _config: ConfigRequirementsReadResponse = serde_json::from_value(config_response)?;
+        .await?;
 
-    let thread_response = client
-        .request(ClientRequest::ThreadStart {
+    let thread: ThreadStartResponse = client
+        .request_typed(ClientRequest::ThreadStart {
             request_id: RequestId::Integer(2),
             params: ThreadStartParams {
                 model: Some("mock-model".to_string()),
@@ -442,12 +441,10 @@ async fn sdk_starts_runnable_layer2_agent_server_with_codex_and_runtime_capabili
                 ..ThreadStartParams::default()
             },
         })
-        .await?
-        .map_err(|error| anyhow!("thread/start should succeed: {error:?}"))?;
-    let thread: ThreadStartResponse = serde_json::from_value(thread_response)?;
+        .await?;
 
     client
-        .request(ClientRequest::TurnStart {
+        .request_typed::<serde_json::Value>(ClientRequest::TurnStart {
             request_id: RequestId::Integer(3),
             params: TurnStartParams {
                 thread_id: thread.thread.id.clone(),
@@ -458,8 +455,7 @@ async fn sdk_starts_runnable_layer2_agent_server_with_codex_and_runtime_capabili
                 ..TurnStartParams::default()
             },
         })
-        .await?
-        .map_err(|error| anyhow!("turn/start should succeed: {error:?}"))?;
+        .await?;
 
     let (tool_request_id, tool_params) = next_dynamic_tool_call(&mut client).await?;
     assert_eq!(tool_params.call_id, LAYER2_TOOL_CALL_ID);
@@ -487,15 +483,17 @@ async fn sdk_starts_runnable_layer2_agent_server_with_codex_and_runtime_capabili
         }]
     );
 
-    client.respond_to_server_request(
-        tool_request_id,
-        serde_json::to_value(DynamicToolCallResponse {
-            content_items: vec![DynamicToolCallOutputContentItem::InputText {
-                text: "layer2-tool-ok".to_string(),
-            }],
-            success: true,
-        })?,
-    )?;
+    client
+        .resolve_server_request(
+            tool_request_id,
+            serde_json::to_value(DynamicToolCallResponse {
+                content_items: vec![DynamicToolCallOutputContentItem::InputText {
+                    text: "layer2-tool-ok".to_string(),
+                }],
+                success: true,
+            })?,
+        )
+        .await?;
 
     let (usage, completed) = read_until_usage_and_completed(&mut client).await?;
     assert_eq!(completed.thread_id, thread.thread.id);
