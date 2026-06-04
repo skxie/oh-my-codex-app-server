@@ -58,8 +58,8 @@ impl std::fmt::Display for RuntimeExtensionErrorInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{:?} failed during {:?}: {}. Fix: {}",
-            self.capability, self.phase, self.what_happened, self.how_to_fix
+            "{:?} `{}` failed during {:?}: {}. Fix: {}",
+            self.capability, self.contributor_id, self.phase, self.what_happened, self.how_to_fix
         )
     }
 }
@@ -81,4 +81,30 @@ pub enum RuntimeRegistryBuildError {
         existing_contributor_id: RuntimeContributorId,
         attempted_contributor_id: RuntimeContributorId,
     },
+}
+
+impl RuntimeRegistryBuildError {
+    pub fn into_error_info(self) -> RuntimeExtensionErrorInfo {
+        match self {
+            RuntimeRegistryBuildError::DuplicateCapability {
+                capability,
+                existing_contributor_id,
+                attempted_contributor_id,
+            } => RuntimeExtensionErrorInfo::new(
+                capability,
+                attempted_contributor_id,
+                RuntimeExtensionPhase::Registration,
+                format!(
+                    "runtime capability already has implementation `{existing_contributor_id}`"
+                ),
+                "register only one active implementation for this runtime capability",
+            ),
+        }
+    }
+}
+
+impl From<RuntimeRegistryBuildError> for RuntimeExtensionErrorInfo {
+    fn from(value: RuntimeRegistryBuildError) -> Self {
+        value.into_error_info()
+    }
 }

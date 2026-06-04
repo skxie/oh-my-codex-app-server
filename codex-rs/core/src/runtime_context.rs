@@ -562,7 +562,7 @@ mod tests {
         match err {
             CodexErr::InvalidRequest(message) => assert_eq!(
                 message,
-                "ContextPolicy failed during ContextSelection: policy rejected candidate graph. Fix: keep current user input and complete tool/result pairs"
+                "ContextPolicy `test.failing_policy` failed during ContextSelection: policy rejected candidate graph. Fix: keep current user input and complete tool/result pairs"
             ),
             other => panic!("unexpected error: {other}"),
         }

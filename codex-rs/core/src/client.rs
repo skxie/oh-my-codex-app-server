@@ -140,6 +140,9 @@ use codex_runtime_api::ModelApiKind;
 use codex_runtime_api::ModelApiRequest;
 use codex_runtime_api::ModelRequestAdapterInput;
 use codex_runtime_api::ProtocolResponseMapperKind;
+use codex_runtime_api::RuntimeCapability;
+use codex_runtime_api::RuntimeExtensionErrorInfo;
+use codex_runtime_api::RuntimeExtensionPhase;
 use codex_runtime_api::RuntimeRegistry;
 
 pub const OPENAI_BETA_HEADER: &str = "OpenAI-Beta";
@@ -239,6 +242,25 @@ impl RequestRouteTelemetry {
     fn for_endpoint(endpoint: &'static str) -> Self {
         Self { endpoint }
     }
+}
+
+fn runtime_extension_invalid_request(
+    capability: RuntimeCapability,
+    contributor_id: String,
+    phase: RuntimeExtensionPhase,
+    what_happened: impl Into<String>,
+    how_to_fix: impl Into<String>,
+) -> CodexErr {
+    CodexErr::InvalidRequest(
+        RuntimeExtensionErrorInfo::new(
+            capability,
+            contributor_id,
+            phase,
+            what_happened,
+            how_to_fix,
+        )
+        .to_string(),
+    )
 }
 
 /// A session-scoped client for model-provider API calls.
@@ -996,15 +1018,31 @@ impl ModelClient {
         if request.api_kind != ModelApiKind::Responses
             || request.response_mapper != ProtocolResponseMapperKind::Responses
         {
-            return Err(CodexErr::InvalidRequest(format!(
-                "runtime model request adapter returned unsupported api kind {:?} with mapper {:?}; only Responses is wired to the current transport",
-                request.api_kind, request.response_mapper
-            )));
+            return Err(runtime_extension_invalid_request(
+                RuntimeCapability::ModelRequestAdapter,
+                self.state
+                    .runtime_registry
+                    .model_request_adapter_id()
+                    .to_string(),
+                RuntimeExtensionPhase::ModelRequest,
+                format!(
+                    "returned unsupported api kind {:?} with mapper {:?}; only Responses is wired to the current transport",
+                    request.api_kind, request.response_mapper
+                ),
+                "return api_kind Responses with mapper Responses for the Responses request builder",
+            ));
         }
         serde_json::from_value(request.body).map_err(|error| {
-            CodexErr::InvalidRequest(format!(
-                "runtime model request adapter returned invalid Responses request body: {error}"
-            ))
+            runtime_extension_invalid_request(
+                RuntimeCapability::ModelRequestAdapter,
+                self.state
+                    .runtime_registry
+                    .model_request_adapter_id()
+                    .to_string(),
+                RuntimeExtensionPhase::ModelRequest,
+                format!("returned invalid Responses request body: {error}"),
+                "return a JSON body that deserializes to the Codex Responses request shape",
+            )
         })
     }
 
@@ -1035,10 +1073,19 @@ impl ModelClient {
                 ApiModelApiResponseMapper::ChatCompletions
             }
             ProtocolResponseMapperKind::Messages | ProtocolResponseMapperKind::Custom(_) => {
-                return Err(CodexErr::InvalidRequest(format!(
-                    "runtime model request adapter returned unsupported response mapper {:?}",
-                    request.response_mapper
-                )));
+                return Err(runtime_extension_invalid_request(
+                    RuntimeCapability::ProtocolResponseMapper,
+                    self.state
+                        .runtime_registry
+                        .model_request_adapter_id()
+                        .to_string(),
+                    RuntimeExtensionPhase::ProtocolResponseMapping,
+                    format!(
+                        "returned unsupported response mapper {:?}",
+                        request.response_mapper
+                    ),
+                    "select Responses or ChatCompletions until this transport supports the requested mapper",
+                ));
             }
         };
 
@@ -1590,9 +1637,17 @@ impl ModelClientSession {
             {
                 let responses_request =
                     serde_json::from_value(request.body.clone()).map_err(|error| {
-                        CodexErr::InvalidRequest(format!(
-                            "runtime model request adapter returned invalid Responses request body: {error}"
-                        ))
+                        runtime_extension_invalid_request(
+                            RuntimeCapability::ModelRequestAdapter,
+                            self.client
+                                .state
+                                .runtime_registry
+                                .model_request_adapter_id()
+                                .to_string(),
+                            RuntimeExtensionPhase::ModelRequest,
+                            format!("returned invalid Responses request body: {error}"),
+                            "return a JSON body that deserializes to the Codex Responses request shape",
+                        )
                     })?;
                 client.stream_request(responses_request, options).await
             } else {

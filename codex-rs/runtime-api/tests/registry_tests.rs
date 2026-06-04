@@ -52,6 +52,27 @@ fn duplicate_same_capability_registration_returns_structured_error() {
 }
 
 #[test]
+fn duplicate_registration_error_maps_to_runtime_extension_error_info() {
+    let error = RuntimeRegistryBuildError::DuplicateCapability {
+        capability: RuntimeCapability::ContextPolicy,
+        existing_contributor_id: RuntimeContributorId::new("first.policy"),
+        attempted_contributor_id: RuntimeContributorId::new("second.policy"),
+    };
+
+    let actual = RuntimeExtensionErrorInfo::from(error);
+
+    let expected = RuntimeExtensionErrorInfo {
+        capability: RuntimeCapability::ContextPolicy,
+        contributor_id: RuntimeContributorId::new("second.policy"),
+        phase: RuntimeExtensionPhase::Registration,
+        what_happened: "runtime capability already has implementation `first.policy`".to_string(),
+        how_to_fix: "register only one active implementation for this runtime capability"
+            .to_string(),
+    };
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn all_runtime_capabilities_can_coexist_with_one_active_implementation_each() {
     let mut builder = RuntimeRegistry::builder();
     builder

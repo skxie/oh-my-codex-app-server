@@ -748,7 +748,41 @@ async fn runtime_model_request_adapter_rejects_unsupported_response_mapper() {
     match err {
         CodexErr::InvalidRequest(message) => assert_eq!(
             message,
-            "runtime model request adapter returned unsupported api kind Responses with mapper Custom(\"test.custom\"); only Responses is wired to the current transport"
+            "ModelRequestAdapter `test.unsupported_mapper` failed during ModelRequest: returned unsupported api kind Responses with mapper Custom(\"test.custom\"); only Responses is wired to the current transport. Fix: return api_kind Responses with mapper Responses for the Responses request builder"
+        ),
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
+#[tokio::test]
+async fn runtime_protocol_response_mapper_error_contract_includes_runtime_extension_info() {
+    let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses);
+    let api_provider = provider
+        .to_api_provider(/*auth_mode*/ None)
+        .expect("build test API provider");
+    let thread_id = ThreadId::new();
+    let mut builder = RuntimeRegistry::builder();
+    builder
+        .model_request_adapter(UnsupportedMapperAdapter)
+        .expect("register unsupported mapper adapter");
+    let model_client = test_model_client_with_registry(builder.build(), thread_id);
+
+    let err = model_client
+        .build_runtime_model_api_request(
+            &api_provider,
+            &test_prompt("hello"),
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+        )
+        .await
+        .expect_err("unsupported mapper should fail");
+
+    match err {
+        CodexErr::InvalidRequest(message) => assert_eq!(
+            message,
+            "ProtocolResponseMapper `test.unsupported_mapper` failed during ProtocolResponseMapping: returned unsupported response mapper Custom(\"test.custom\"). Fix: select Responses or ChatCompletions until this transport supports the requested mapper"
         ),
         other => panic!("unexpected error: {other}"),
     }
@@ -791,7 +825,13 @@ async fn runtime_model_request_adapter_rejects_invalid_responses_body() {
     };
     assert!(
         message
-            .starts_with("runtime model request adapter returned invalid Responses request body:"),
+            .starts_with("ModelRequestAdapter `test.invalid_responses_body` failed during ModelRequest: returned invalid Responses request body:"),
+        "unexpected message: {message}"
+    );
+    assert!(
+        message.ends_with(
+            "Fix: return a JSON body that deserializes to the Codex Responses request shape"
+        ),
         "unexpected message: {message}"
     );
 }

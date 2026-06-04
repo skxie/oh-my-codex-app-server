@@ -1125,7 +1125,7 @@ mod tests {
                 call_id: "call-1".to_string(),
                 output: FunctionCallOutputPayload {
                     body: FunctionCallOutputBody::Text(
-                        "ToolMiddleware failed during ToolBeforeCall: runtime policy rejected arguments. Fix: repair arguments or return Block with a model-visible reason"
+                        "ToolMiddleware `test.failing_before_tool` failed during ToolBeforeCall: runtime policy rejected arguments. Fix: repair arguments or return Block with a model-visible reason"
                             .to_string(),
                     ),
                     success: Some(false),
