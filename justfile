@@ -88,11 +88,11 @@ test *args:
 # Warm-checkout Layer 1 quickstart for downstream runtime extension authors.
 [unix]
 tthw-layer1:
-    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast --no-capture -p codex-app-server runtime_registry_fake_backend_fixture_takes_effect_through_in_process_app_server
+    start=$(date +%s); RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast --no-capture -p codex-app-server runtime_registry_fake_backend_fixture_takes_effect_through_in_process_app_server; status=$?; end=$(date +%s); elapsed=$((end - start)); echo "tthw-layer1 elapsedSeconds=$elapsed warmTargetSeconds=300"; exit $status
 
 [windows]
 tthw-layer1:
-    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast --no-capture -p codex-app-server runtime_registry_fake_backend_fixture_takes_effect_through_in_process_app_server
+    $start = Get-Date; $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast --no-capture -p codex-app-server runtime_registry_fake_backend_fixture_takes_effect_through_in_process_app_server; $status = $LASTEXITCODE; $elapsed = [int]((Get-Date) - $start).TotalSeconds; Write-Host "tthw-layer1 elapsedSeconds=$elapsed warmTargetSeconds=300"; exit $status
 
 # Rebase guard for the fork-owned Layer 1 runtime seams.
 [unix]
