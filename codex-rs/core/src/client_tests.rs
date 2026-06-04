@@ -748,7 +748,7 @@ async fn runtime_model_request_adapter_rejects_unsupported_response_mapper() {
     match err {
         CodexErr::InvalidRequest(message) => assert_eq!(
             message,
-            "ModelRequestAdapter `test.unsupported_mapper` failed during ModelRequest: returned unsupported api kind Responses with mapper Custom(\"test.custom\"); only Responses is wired to the current transport. Fix: return api_kind Responses with mapper Responses for the Responses request builder"
+            "ModelRequestAdapter `test.unsupported_mapper` failed during ModelRequest: returned unsupported api kind Responses with mapper Custom(\"test.custom\"); only Responses is wired to the current transport. Likely cause: the adapter selected an API kind or mapper that is not wired to this transport path. Fix: return api_kind Responses with mapper Responses for the Responses request builder. Docs: model-request-adapter-unsupported-api-kind"
         ),
         other => panic!("unexpected error: {other}"),
     }
@@ -782,7 +782,7 @@ async fn runtime_protocol_response_mapper_error_contract_includes_runtime_extens
     match err {
         CodexErr::InvalidRequest(message) => assert_eq!(
             message,
-            "ProtocolResponseMapper `test.unsupported_mapper` failed during ProtocolResponseMapping: returned unsupported response mapper Custom(\"test.custom\"). Fix: select Responses or ChatCompletions until this transport supports the requested mapper"
+            "ProtocolResponseMapper `test.unsupported_mapper` failed during ProtocolResponseMapping: returned unsupported response mapper Custom(\"test.custom\"). Likely cause: the adapter requested a mapper without a Codex stream parser for this transport. Fix: select Responses or ChatCompletions until this transport supports the requested mapper. Docs: protocol-response-mapper-unsupported"
         ),
         other => panic!("unexpected error: {other}"),
     }
@@ -830,7 +830,7 @@ async fn runtime_model_request_adapter_rejects_invalid_responses_body() {
     );
     assert!(
         message.ends_with(
-            "Fix: return a JSON body that deserializes to the Codex Responses request shape"
+            "Likely cause: the adapter returned JSON that does not match Codex's Responses request schema. Fix: return a JSON body that deserializes to the Codex Responses request shape. Docs: model-request-adapter-invalid-responses-body"
         ),
         "unexpected message: {message}"
     );
