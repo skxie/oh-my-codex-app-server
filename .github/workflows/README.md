@@ -13,6 +13,9 @@ The workflows in this directory are split so that pull requests get fast, review
   - `cargo shear`
   - `argument-comment-lint` on Linux, macOS, and Windows
   - `tools/argument-comment-lint` package tests when the lint or its workflow wiring changes
+- `runtime-layer1.yml` is the fork-owned Layer 1 runtime extension gate. It
+  reuses `just pre-push-layer1` so local push-time verification and GitHub CI
+  exercise the same adapter, app-server, and SDK behavior.
 
 ## Post-Merge On `main`
 

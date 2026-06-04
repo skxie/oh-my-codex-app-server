@@ -115,6 +115,25 @@ verify-layer1-adapters:
     $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-app-server runtime_registry_fake_backend_fixture
     $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-memories-write
 
+# Push-time gate for the fork-owned Layer 1 runtime extension branch.
+[unix]
+pre-push-layer1:
+    just fmt-check
+    just verify-layer1-adapters
+    just tthw-layer1
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-api
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-app-server
+    just bench-smoke
+
+[windows]
+pre-push-layer1:
+    just fmt-check
+    just verify-layer1-adapters
+    just tthw-layer1
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-api
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-app-server
+    just bench-smoke
+
 # Run from the repository root so scripts that resolve paths from `cwd` see
 # the same layout they use in GitHub Actions.
 [no-cd]
