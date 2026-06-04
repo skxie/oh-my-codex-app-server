@@ -1108,6 +1108,16 @@ async fn run_sampling_request(
                 .await
                 .for_prompt(&turn_context.model_info.input_modalities)
         };
+        let prompt_input = crate::runtime_context::select_prompt_input(
+            &sess.services.runtime_registry,
+            &turn_context.sub_id,
+            prompt_input,
+            turn_context
+                .model_info
+                .context_window
+                .and_then(|value| u32::try_from(value).ok()),
+        )
+        .await?;
         let prompt = build_prompt(
             prompt_input,
             router.as_ref(),
@@ -2211,6 +2221,7 @@ async fn try_run_sampling_request(
             }
             ResponseEvent::Completed {
                 token_usage,
+                raw_provider_metadata,
                 end_turn,
                 ..
             } => {
@@ -2222,7 +2233,11 @@ async fn try_run_sampling_request(
                 )
                 .await;
                 let budget_result = sess
-                    .record_token_usage_info(&turn_context, token_usage.as_ref())
+                    .record_token_usage_info_with_provider_metadata(
+                        &turn_context,
+                        token_usage.as_ref(),
+                        raw_provider_metadata.as_ref(),
+                    )
                     .await;
                 should_emit_token_count = true;
                 should_emit_turn_diff = true;

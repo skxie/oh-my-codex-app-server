@@ -144,6 +144,7 @@ use codex_rollout::state_db;
 use codex_rollout_trace::AgentResultTracePayload;
 use codex_rollout_trace::ThreadStartedTraceMetadata;
 use codex_rollout_trace::ThreadTraceContext;
+use codex_runtime_api::RuntimeRegistry;
 use codex_sandboxing::policy_transforms::intersect_permission_profiles;
 use codex_shell_command::parse_command::parse_command;
 use codex_terminal_detection::user_agent;
@@ -420,6 +421,7 @@ pub(crate) struct CodexSpawnArgs {
     pub(crate) mcp_manager: Arc<McpManager>,
     pub(crate) code_mode_session_provider: Arc<dyn codex_code_mode::CodeModeSessionProvider>,
     pub(crate) extensions: Arc<codex_extension_api::ExtensionRegistry<crate::config::Config>>,
+    pub(crate) runtime_registry: RuntimeRegistry,
     pub(crate) conversation_history: InitialHistory,
     pub(crate) requested_history_mode: Option<ThreadHistoryMode>,
     pub(crate) session_source: SessionSource,
@@ -512,6 +514,7 @@ impl Codex {
             mcp_manager,
             code_mode_session_provider,
             extensions,
+            runtime_registry,
             conversation_history,
             requested_history_mode,
             session_source,
@@ -694,6 +697,7 @@ impl Codex {
             extensions,
             thread_extension_init,
             supports_openai_form_elicitation,
+            runtime_registry,
             agent_control,
             environment_manager,
             inherited_environments,
@@ -3311,6 +3315,25 @@ impl Session {
         {
             developer_sections.push(plugin_instructions.render());
         }
+        match crate::runtime_context::contribute_initial_context_sections(
+            &self.services.runtime_registry,
+            &turn_context.sub_id,
+        )
+        .await
+        {
+            Ok(runtime_sections) => {
+                developer_sections.extend(runtime_sections.developer_policy);
+                developer_sections.extend(runtime_sections.developer_capabilities);
+                contextual_user_sections.extend(runtime_sections.contextual_user);
+                separate_developer_sections.extend(runtime_sections.separate_developer);
+            }
+            Err(err) => {
+                warn!(
+                    "runtime context contributor failed for turn {}: {err}",
+                    turn_context.sub_id
+                );
+            }
+        }
         let context_contributors = self.services.extensions.context_contributors().to_vec();
         for contributor in &context_contributors {
             for fragment in contributor
@@ -3649,16 +3672,49 @@ impl Session {
         turn_context: &TurnContext,
         token_usage: Option<&TokenUsage>,
     ) -> CodexResult<()> {
+        self.record_token_usage_info_with_provider_metadata(
+            turn_context,
+            token_usage,
+            /*raw_provider_metadata*/ None,
+        )
+        .await
+    }
+
+    pub(crate) async fn record_token_usage_info_with_provider_metadata(
+        &self,
+        turn_context: &TurnContext,
+        token_usage: Option<&TokenUsage>,
+        raw_provider_metadata: Option<&HashMap<String, Value>>,
+    ) -> CodexResult<()> {
         if let Some(token_usage) = token_usage {
+            let mapped_token_usage = match crate::runtime_usage::map_token_usage(
+                &self.services.runtime_registry,
+                token_usage,
+                raw_provider_metadata,
+            )
+            .await
+            {
+                Ok(Some(mapped)) => mapped,
+                Ok(None) => return Ok(()),
+                Err(err) => {
+                    warn!(
+                        "runtime usage metadata mapper failed for turn {}: {err}",
+                        turn_context.sub_id
+                    );
+                    token_usage.clone()
+                }
+            };
             let token_info = {
                 let mut state = self.state.lock().await;
-                state
-                    .update_token_info_from_usage(token_usage, turn_context.model_context_window());
+                state.update_token_info_from_usage(
+                    &mapped_token_usage,
+                    turn_context.model_context_window(),
+                );
                 if matches!(
                     turn_context.config.model_auto_compact_token_limit_scope,
                     AutoCompactTokenLimitScope::BodyAfterPrefix
                 ) {
-                    state.ensure_auto_compact_window_server_prefill_from_usage(token_usage);
+                    state.ensure_auto_compact_window_server_prefill_from_usage(&mapped_token_usage);
                 }
                 state.token_info()
             };

@@ -490,6 +490,7 @@ fn test_model_client_session() -> crate::client::ModelClientSession {
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
         /*item_ids_enabled*/ false,
+        codex_runtime_api::RuntimeRegistry::default(),
         /*attestation_provider*/ None,
     )
     .new_session()
@@ -2381,6 +2382,74 @@ async fn record_token_usage_info_notifies_extension_contributors() {
         .drain(..)
         .collect::<Vec<_>>();
     assert_eq!(expected, actual);
+}
+
+#[tokio::test]
+async fn runtime_usage_metadata_mapper_changes_recorded_token_usage() {
+    struct FixedUsageMapper;
+
+    impl codex_runtime_api::UsageMetadataMapper for FixedUsageMapper {
+        fn id(&self) -> codex_runtime_api::UsageMetadataMapperId {
+            codex_runtime_api::UsageMetadataMapperId::new("test.fixed_usage_mapper")
+        }
+
+        async fn map_usage_metadata(
+            &self,
+            _input: codex_runtime_api::UsageMetadataMapperInput,
+        ) -> std::result::Result<
+            Option<codex_runtime_api::UsageMetadata>,
+            codex_runtime_api::UsageMetadataMapperError,
+        > {
+            Ok(Some(codex_runtime_api::UsageMetadata {
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                cached_prompt_tokens: Some(80),
+                cache_miss_prompt_tokens: Some(20),
+                reasoning_tokens: Some(10),
+            }))
+        }
+    }
+
+    let (mut session, turn_context) = make_session_and_context().await;
+    let mut builder = codex_runtime_api::RuntimeRegistry::builder();
+    builder
+        .usage_metadata_mapper(FixedUsageMapper)
+        .expect("register usage mapper");
+    session.services.runtime_registry = builder.build();
+    let original_usage = TokenUsage {
+        input_tokens: 1,
+        cached_input_tokens: 0,
+        output_tokens: 2,
+        reasoning_output_tokens: 0,
+        total_tokens: 3,
+    };
+
+    session
+        .record_token_usage_info(&turn_context, Some(&original_usage))
+        .await;
+
+    let expected = TokenUsageInfo {
+        total_token_usage: TokenUsage {
+            input_tokens: 100,
+            cached_input_tokens: 80,
+            output_tokens: 50,
+            reasoning_output_tokens: 10,
+            total_tokens: 160,
+        },
+        last_token_usage: TokenUsage {
+            input_tokens: 100,
+            cached_input_tokens: 80,
+            output_tokens: 50,
+            reasoning_output_tokens: 10,
+            total_tokens: 160,
+        },
+        model_context_window: turn_context.model_context_window(),
+    };
+    let actual = session
+        .token_usage_info()
+        .await
+        .expect("mapped token usage should be recorded");
+    assert_eq!(actual, expected);
 }
 
 #[tokio::test]
@@ -5234,6 +5303,7 @@ async fn session_new_fails_when_zsh_fork_enabled_without_packaged_zsh() {
         Arc::new(codex_extension_api::ExtensionRegistryBuilder::new().build()),
         codex_extension_api::ExtensionDataInit::default(),
         /*supports_openai_form_elicitation*/ false,
+        codex_runtime_api::RuntimeRegistry::default(),
         AgentControl::default(),
         environment_manager,
         /*inherited_environments*/ None,
@@ -5411,6 +5481,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         plugins_manager,
         mcp_manager,
         extensions: Arc::new(codex_extension_api::ExtensionRegistryBuilder::new().build()),
+        runtime_registry: codex_runtime_api::RuntimeRegistry::default(),
         session_extension_data: codex_extension_api::ExtensionData::new(
             agent_control.session_id().to_string(),
         ),
@@ -5443,6 +5514,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
             config.features.enabled(Feature::RuntimeMetrics),
             Session::build_model_client_beta_features_header(config.as_ref()),
             /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
+            codex_runtime_api::RuntimeRegistry::default(),
             /*attestation_provider*/ None,
         ),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(Arc::new(
@@ -5616,6 +5688,7 @@ async fn make_session_with_config_and_rx(
         Arc::new(codex_extension_api::ExtensionRegistryBuilder::new().build()),
         codex_extension_api::ExtensionDataInit::default(),
         /*supports_openai_form_elicitation*/ false,
+        codex_runtime_api::RuntimeRegistry::default(),
         AgentControl::default(),
         environment_manager,
         /*inherited_environments*/ None,
@@ -5724,6 +5797,7 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         Arc::new(codex_extension_api::ExtensionRegistryBuilder::new().build()),
         codex_extension_api::ExtensionDataInit::default(),
         /*supports_openai_form_elicitation*/ false,
+        codex_runtime_api::RuntimeRegistry::default(),
         agent_control,
         environment_manager,
         /*inherited_environments*/ None,
@@ -7537,6 +7611,7 @@ where
         plugins_manager,
         mcp_manager,
         extensions: Arc::new(codex_extension_api::ExtensionRegistryBuilder::new().build()),
+        runtime_registry: codex_runtime_api::RuntimeRegistry::default(),
         session_extension_data: codex_extension_api::ExtensionData::new(
             agent_control.session_id().to_string(),
         ),
@@ -7569,6 +7644,7 @@ where
             config.features.enabled(Feature::RuntimeMetrics),
             Session::build_model_client_beta_features_header(config.as_ref()),
             /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
+            codex_runtime_api::RuntimeRegistry::default(),
             /*attestation_provider*/ None,
         ),
         code_mode_service: crate::tools::code_mode::CodeModeService::new(Arc::new(
@@ -8127,6 +8203,7 @@ struct TurnContextExtensionTestContributor;
 struct TurnContextExtensionTestState {
     expected_model_context_window: Option<i64>,
 }
+struct RuntimeContextTestContributor;
 
 impl codex_extension_api::ContextContributor for PromptExtensionTestContributor {
     fn contribute_thread_context<'a>(
@@ -8183,6 +8260,41 @@ impl codex_extension_api::ContextContributor for TurnContextExtensionTestContrib
     }
 }
 
+impl codex_runtime_api::ContextContributor for RuntimeContextTestContributor {
+    fn id(&self) -> codex_runtime_api::ContextContributorId {
+        codex_runtime_api::ContextContributorId::new("test.runtime_context_contributor")
+    }
+
+    async fn contribute(
+        &self,
+        _input: codex_runtime_api::ContextContributorInput,
+    ) -> Result<Vec<codex_runtime_api::ContextBlock>, codex_runtime_api::ContextError> {
+        Ok(vec![
+            codex_runtime_api::ContextBlock {
+                id: "runtime-dev-policy".to_string(),
+                slot: codex_runtime_api::ContextBlockSlot::DeveloperPolicy,
+                content: "runtime developer policy".to_string(),
+                source: "test".to_string(),
+                metadata: std::collections::BTreeMap::new(),
+            },
+            codex_runtime_api::ContextBlock {
+                id: "runtime-contextual-user".to_string(),
+                slot: codex_runtime_api::ContextBlockSlot::ContextualUser,
+                content: "runtime contextual user".to_string(),
+                source: "test".to_string(),
+                metadata: std::collections::BTreeMap::new(),
+            },
+            codex_runtime_api::ContextBlock {
+                id: "runtime-separate-dev".to_string(),
+                slot: codex_runtime_api::ContextBlockSlot::SeparateDeveloper,
+                content: "runtime separate developer".to_string(),
+                source: "test".to_string(),
+                metadata: std::collections::BTreeMap::new(),
+            },
+        ])
+    }
+}
+
 #[tokio::test]
 async fn build_initial_context_includes_prompt_fragments_from_extensions() {
     let (mut session, turn_context) = make_session_and_context().await;
@@ -8229,6 +8341,47 @@ async fn build_initial_context_includes_turn_context_fragments_from_extensions()
             .flatten()
             .any(|text| *text == "turn context extension enabled"),
         "expected turn context extension developer text, got {developer_messages:?}"
+    );
+}
+
+#[tokio::test]
+async fn build_initial_context_includes_runtime_context_contributor_blocks() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    let mut builder = codex_runtime_api::RuntimeRegistry::builder();
+    builder
+        .context_contributor(RuntimeContextTestContributor)
+        .expect("register runtime context contributor");
+    session.services.runtime_registry = builder.build();
+
+    let initial_context = build_initial_context(&session, &turn_context).await;
+    let developer_messages = developer_message_texts(&initial_context);
+
+    assert!(
+        developer_messages
+            .iter()
+            .flatten()
+            .any(|text| *text == "runtime developer policy"),
+        "expected runtime developer context, got {developer_messages:?}"
+    );
+    assert!(
+        developer_messages
+            .iter()
+            .any(|message| message.as_slice() == ["runtime separate developer"]),
+        "expected separate runtime developer context, got {developer_messages:?}"
+    );
+    assert!(
+        initial_context.iter().any(|item| match item {
+            ResponseItem::Message { role, content, .. } if role == "user" => {
+                content.iter().any(|item| {
+                    matches!(
+                        item,
+                        ContentItem::InputText { text } if text == "runtime contextual user"
+                    )
+                })
+            }
+            _ => false,
+        }),
+        "expected runtime contextual user context, got {initial_context:?}"
     );
 }
 

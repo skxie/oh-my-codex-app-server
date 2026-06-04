@@ -19,6 +19,7 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TurnEnvironmentSelections;
+use codex_runtime_api::RuntimeRegistry;
 use std::sync::OnceLock;
 use tokio::sync::Semaphore;
 
@@ -497,6 +498,7 @@ impl Session {
         extensions: Arc<codex_extension_api::ExtensionRegistry<crate::config::Config>>,
         mut thread_extension_init: ExtensionDataInit,
         supports_openai_form_elicitation: bool,
+        runtime_registry: RuntimeRegistry,
         agent_control: AgentControl,
         environment_manager: Arc<EnvironmentManager>,
         inherited_environments: Option<TurnEnvironmentSnapshot>,
@@ -1076,6 +1078,7 @@ impl Session {
                 plugins_manager: Arc::clone(&plugins_manager),
                 mcp_manager: Arc::clone(&mcp_manager),
                 extensions,
+                runtime_registry: runtime_registry.clone(),
                 // TODO(jif): extract session to share between sub-agents
                 session_extension_data,
                 thread_extension_data,
@@ -1110,7 +1113,7 @@ impl Session {
                     config.features.enabled(Feature::RuntimeMetrics),
                     Self::build_model_client_beta_features_header(config.as_ref()),
                     /*item_ids_enabled*/ config.features.enabled(Feature::ItemIds),
-                    codex_runtime_api::RuntimeRegistry::default(),
+                    runtime_registry.clone(),
                     attestation_provider,
                 )
                 .with_prompt_cache_key_override(

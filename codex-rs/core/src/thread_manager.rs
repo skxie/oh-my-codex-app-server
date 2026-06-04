@@ -1585,6 +1585,7 @@ impl ThreadManagerState {
             mcp_manager: Arc::clone(&self.mcp_manager),
             code_mode_session_provider: Arc::clone(&self.code_mode_session_provider),
             extensions: Arc::clone(&self.extensions),
+            runtime_registry: codex_runtime_api::RuntimeRegistry::default(),
             conversation_history: initial_history,
             requested_history_mode: history_mode,
             session_source,
