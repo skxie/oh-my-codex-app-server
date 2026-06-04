@@ -10,11 +10,14 @@ use codex_runtime_api::UsageMetadata;
 use codex_runtime_api::UsageMetadataMapperInput;
 use std::collections::HashMap;
 
+const MAX_RAW_PROVIDER_METADATA_BYTES: usize = 40_000;
+
 pub(crate) async fn map_token_usage(
     registry: &RuntimeRegistry,
     token_usage: &TokenUsage,
     raw_provider_metadata: Option<&HashMap<String, serde_json::Value>>,
 ) -> CodexResult<Option<TokenUsage>> {
+    validate_raw_provider_metadata(registry, raw_provider_metadata)?;
     let mapped = registry
         .map_usage_metadata(UsageMetadataMapperInput {
             raw_provider_metadata: RawProviderMetadata {
@@ -42,6 +45,33 @@ pub(crate) async fn map_token_usage(
                 .to_string(),
             )
         })
+}
+
+fn validate_raw_provider_metadata(
+    registry: &RuntimeRegistry,
+    raw_provider_metadata: Option<&HashMap<String, serde_json::Value>>,
+) -> CodexResult<()> {
+    let Some(raw_provider_metadata) = raw_provider_metadata else {
+        return Ok(());
+    };
+    let size = serde_json::to_vec(raw_provider_metadata)
+        .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?
+        .len();
+    if size > MAX_RAW_PROVIDER_METADATA_BYTES {
+        return Err(CodexErr::InvalidRequest(
+            RuntimeExtensionErrorInfo::new(
+                RuntimeCapability::UsageMetadataMapper,
+                registry.usage_metadata_mapper_id().to_string(),
+                RuntimeExtensionPhase::UsageMapping,
+                format!(
+                    "raw provider metadata is {size} bytes, exceeding {MAX_RAW_PROVIDER_METADATA_BYTES} byte limit"
+                ),
+                "drop, summarize, or map provider metadata before usage normalization",
+            )
+            .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn usage_metadata_from_token_usage(token_usage: &TokenUsage) -> CodexResult<UsageMetadata> {
@@ -198,6 +228,28 @@ mod tests {
             CodexErr::InvalidRequest(message) => assert_eq!(
                 message,
                 "UsageMetadataMapper `test.overflow_usage_mapper` failed during UsageMapping: returned prompt_tokens value that exceeds i64: 18446744073709551615. Fix: return token counts that fit the app-server TokenUsage event fields"
+            ),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_mapper_rejects_oversized_raw_provider_metadata() {
+        let registry = RuntimeRegistry::default();
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "large".to_string(),
+            serde_json::Value::String("x".repeat(MAX_RAW_PROVIDER_METADATA_BYTES)),
+        );
+
+        let err = map_token_usage(&registry, &token_usage(), Some(&metadata))
+            .await
+            .expect_err("oversized raw metadata should fail");
+
+        match err {
+            CodexErr::InvalidRequest(message) => assert_eq!(
+                message,
+                "UsageMetadataMapper `codex.default.usage_metadata_mapper` failed during UsageMapping: raw provider metadata is 40012 bytes, exceeding 40000 byte limit. Fix: drop, summarize, or map provider metadata before usage normalization"
             ),
             other => panic!("unexpected error: {other}"),
         }

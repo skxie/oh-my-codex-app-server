@@ -9,10 +9,15 @@ use codex_runtime_api::ContextCandidate;
 use codex_runtime_api::ContextCandidateSource;
 use codex_runtime_api::ContextContributorInput;
 use codex_runtime_api::ContextPolicyInput;
+use codex_runtime_api::RuntimeCapability;
+use codex_runtime_api::RuntimeExtensionErrorInfo;
+use codex_runtime_api::RuntimeExtensionPhase;
 use codex_runtime_api::RuntimeRegistry;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+
+const MAX_CONTEXT_BLOCK_BYTES: usize = 40_000;
 
 #[derive(Default)]
 pub(crate) struct RuntimeContextSections {
@@ -33,6 +38,7 @@ pub(crate) async fn contribute_initial_context_sections(
         })
         .await
         .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+    validate_context_blocks(registry, &blocks)?;
 
     Ok(blocks
         .into_iter()
@@ -105,6 +111,28 @@ fn push_context_block(sections: &mut RuntimeContextSections, block: ContextBlock
         ContextBlockSlot::ContextualUser => sections.contextual_user.push(block.content),
         ContextBlockSlot::SeparateDeveloper => sections.separate_developer.push(block.content),
     }
+}
+
+fn validate_context_blocks(registry: &RuntimeRegistry, blocks: &[ContextBlock]) -> CodexResult<()> {
+    for block in blocks {
+        let size = block.content.len();
+        if size > MAX_CONTEXT_BLOCK_BYTES {
+            return Err(CodexErr::InvalidRequest(
+                RuntimeExtensionErrorInfo::new(
+                    RuntimeCapability::ContextContributor,
+                    registry.context_contributor_id().to_string(),
+                    RuntimeExtensionPhase::ContextContribution,
+                    format!(
+                        "context block `{}` is {size} bytes, exceeding {MAX_CONTEXT_BLOCK_BYTES} byte limit",
+                        block.id
+                    ),
+                    "split, summarize, or omit large contributor context blocks before prompt assembly",
+                )
+                .to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn context_candidate_for_item(index: usize, total: usize, item: &ResponseItem) -> ContextCandidate {
@@ -330,6 +358,8 @@ fn tool_pair_key(item: &ResponseItem) -> Option<(ToolPairKind, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_runtime_api::ContextContributor;
+    use codex_runtime_api::ContextContributorId;
     use codex_runtime_api::ContextError;
     use codex_runtime_api::ContextPolicy;
     use codex_runtime_api::ContextPolicyDecision;
@@ -374,6 +404,7 @@ mod tests {
     }
 
     struct OrphanToolResultPolicy;
+    struct OversizedContextContributor;
 
     impl ContextPolicy for OrphanToolResultPolicy {
         fn id(&self) -> ContextPolicyId {
@@ -387,6 +418,25 @@ mod tests {
             Ok(ContextPolicyDecision {
                 selected: vec![input.candidates[1].clone(), input.candidates[2].clone()],
             })
+        }
+    }
+
+    impl ContextContributor for OversizedContextContributor {
+        fn id(&self) -> ContextContributorId {
+            ContextContributorId::new("test.oversized_context_contributor")
+        }
+
+        async fn contribute(
+            &self,
+            _input: ContextContributorInput,
+        ) -> std::result::Result<Vec<ContextBlock>, ContextError> {
+            Ok(vec![ContextBlock {
+                id: "too-large".to_string(),
+                slot: ContextBlockSlot::DeveloperPolicy,
+                content: "x".repeat(MAX_CONTEXT_BLOCK_BYTES + 1),
+                source: "test".to_string(),
+                metadata: BTreeMap::new(),
+            }])
         }
     }
 
@@ -517,6 +567,27 @@ mod tests {
             CodexErr::InvalidRequest(message) => assert_eq!(
                 message,
                 "runtime context policy selected only part of tool call/result pair `call-1` for turn `turn-test`"
+            ),
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_context_contributor_rejects_oversized_block() {
+        let mut builder = RuntimeRegistry::builder();
+        builder
+            .context_contributor(OversizedContextContributor)
+            .expect("register oversized context contributor");
+
+        let err = match contribute_initial_context_sections(&builder.build(), "turn-test").await {
+            Ok(_) => panic!("oversized context block should fail"),
+            Err(err) => err,
+        };
+
+        match err {
+            CodexErr::InvalidRequest(message) => assert_eq!(
+                message,
+                "ContextContributor `test.oversized_context_contributor` failed during ContextContribution: context block `too-large` is 40001 bytes, exceeding 40000 byte limit. Fix: split, summarize, or omit large contributor context blocks before prompt assembly"
             ),
             other => panic!("unexpected error: {other}"),
         }

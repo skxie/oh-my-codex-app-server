@@ -2,10 +2,15 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use std::time::Instant;
 
+use codex_runtime_api::RuntimeCapability;
+use codex_runtime_api::RuntimeExtensionErrorInfo;
+use codex_runtime_api::RuntimeExtensionPhase;
 use tokio::sync::RwLock;
 use tokio::task::JoinError;
+use tokio::time::timeout;
 use tokio_util::either::Either;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
@@ -45,6 +50,8 @@ struct ToolCallTimingGuard {
     call_id: String,
     tool_name: codex_tools::ToolName,
 }
+
+const TOOL_MIDDLEWARE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub(crate) struct ToolCallRuntime {
@@ -365,13 +372,37 @@ async fn apply_before_tool_middleware(
     call: ToolCall,
     source: &ToolCallSource,
 ) -> Result<BeforeToolMiddlewareOutcome, FunctionCallError> {
+    apply_before_tool_middleware_with_timeout(session, call, source, TOOL_MIDDLEWARE_TIMEOUT).await
+}
+
+async fn apply_before_tool_middleware_with_timeout(
+    session: &Session,
+    call: ToolCall,
+    source: &ToolCallSource,
+    timeout_duration: Duration,
+) -> Result<BeforeToolMiddlewareOutcome, FunctionCallError> {
     let runtime_call = to_runtime_tool_call(&call, source);
-    let decision = session
-        .services
-        .runtime_registry
-        .before_tool_call(runtime_call.clone())
-        .await
-        .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+    let decision = timeout(
+        timeout_duration,
+        session
+            .services
+            .runtime_registry
+            .before_tool_call(runtime_call.clone()),
+    )
+    .await
+    .map_err(|_| {
+        FunctionCallError::RespondToModel(
+            RuntimeExtensionErrorInfo::new(
+                RuntimeCapability::ToolMiddleware,
+                session.services.runtime_registry.tool_middleware_id().to_string(),
+                RuntimeExtensionPhase::ToolBeforeCall,
+                format!("middleware exceeded {}ms timeout", timeout_duration.as_millis()),
+                "return a before-call decision promptly, or block the call with a model-visible reason",
+            )
+            .to_string(),
+        )
+    })?
+    .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
     let Some(effective_call) = decision.effective_call(&runtime_call) else {
         let ToolCallDecision::Block { reason } = decision else {
             return Err(FunctionCallError::RespondToModel(
@@ -410,14 +441,47 @@ async fn apply_after_tool_middleware(
     result: AnyToolResult,
     source: &ToolCallSource,
 ) -> Result<AnyToolResult, FunctionCallError> {
+    apply_after_tool_middleware_with_timeout(session, call, result, source, TOOL_MIDDLEWARE_TIMEOUT)
+        .await
+}
+
+async fn apply_after_tool_middleware_with_timeout(
+    session: &Session,
+    call: &ToolCall,
+    result: AnyToolResult,
+    source: &ToolCallSource,
+    timeout_duration: Duration,
+) -> Result<AnyToolResult, FunctionCallError> {
     let runtime_call = to_runtime_tool_call(call, source);
     let runtime_result = to_runtime_tool_result(&result);
-    let decision = session
-        .services
-        .runtime_registry
-        .after_tool_call(runtime_call, runtime_result)
-        .await
-        .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+    let decision = timeout(
+        timeout_duration,
+        session
+            .services
+            .runtime_registry
+            .after_tool_call(runtime_call, runtime_result),
+    )
+    .await
+    .map_err(|_| {
+        FunctionCallError::RespondToModel(
+            RuntimeExtensionErrorInfo::new(
+                RuntimeCapability::ToolMiddleware,
+                session
+                    .services
+                    .runtime_registry
+                    .tool_middleware_id()
+                    .to_string(),
+                RuntimeExtensionPhase::ToolAfterCall,
+                format!(
+                    "middleware exceeded {}ms timeout",
+                    timeout_duration.as_millis()
+                ),
+                "return an after-call decision promptly, or preserve the original tool result",
+            )
+            .to_string(),
+        )
+    })?
+    .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
     match decision {
         ToolResultDecision::Preserve => Ok(result),
         ToolResultDecision::Replace(replacement) => {
@@ -690,6 +754,7 @@ mod tests {
     struct RepairArgumentsMiddleware;
     struct BlockArgumentsMiddleware;
     struct NormalizeResultMiddleware;
+    struct DelayedToolMiddleware;
 
     impl ToolExecutor<ToolInvocation> for ImmediateHandler {
         fn tool_name(&self) -> codex_tools::ToolName {
@@ -831,6 +896,31 @@ mod tests {
                     output: serde_json::Value::String("normalized output".to_string()),
                 },
             ))
+        }
+    }
+
+    impl codex_runtime_api::ToolMiddleware for DelayedToolMiddleware {
+        fn id(&self) -> codex_runtime_api::ToolMiddlewareId {
+            codex_runtime_api::ToolMiddlewareId::new("test.delayed_tool_middleware")
+        }
+
+        async fn before_tool_call(
+            &self,
+            _call: codex_runtime_api::ToolCall,
+        ) -> Result<codex_runtime_api::ToolCallDecision, codex_runtime_api::ToolMiddlewareError>
+        {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok(codex_runtime_api::ToolCallDecision::Continue)
+        }
+
+        async fn after_tool_call(
+            &self,
+            _call: codex_runtime_api::ToolCall,
+            _result: codex_runtime_api::ToolResult,
+        ) -> Result<codex_runtime_api::ToolResultDecision, codex_runtime_api::ToolMiddlewareError>
+        {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok(codex_runtime_api::ToolResultDecision::Preserve)
         }
     }
 
@@ -1181,6 +1271,93 @@ mod tests {
                     success: Some(true),
                 },
             }
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_tool_middleware_before_timeout_returns_runtime_error() -> anyhow::Result<()> {
+        let (mut session, _turn_context) = crate::session::tests::make_session_and_context().await;
+        let mut builder = codex_runtime_api::RuntimeRegistry::builder();
+        builder
+            .tool_middleware(DelayedToolMiddleware)
+            .expect("register delayed middleware");
+        session.services.runtime_registry = builder.build();
+        let session = Arc::new(session);
+        let call = ToolCall {
+            tool_name: codex_tools::ToolName::plain("test_tool"),
+            call_id: "call-1".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        };
+
+        let err = match apply_before_tool_middleware_with_timeout(
+            &session,
+            call,
+            &ToolCallSource::Direct,
+            Duration::from_millis(1),
+        )
+        .await
+        {
+            Ok(_) => panic!("delayed before middleware should time out"),
+            Err(err) => err,
+        };
+
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "ToolMiddleware `test.delayed_tool_middleware` failed during ToolBeforeCall: middleware exceeded 1ms timeout. Fix: return a before-call decision promptly, or block the call with a model-visible reason"
+                    .to_string()
+            )
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_tool_middleware_after_timeout_returns_runtime_error() -> anyhow::Result<()> {
+        let (mut session, _turn_context) = crate::session::tests::make_session_and_context().await;
+        let mut builder = codex_runtime_api::RuntimeRegistry::builder();
+        builder
+            .tool_middleware(DelayedToolMiddleware)
+            .expect("register delayed middleware");
+        session.services.runtime_registry = builder.build();
+        let session = Arc::new(session);
+        let call = ToolCall {
+            tool_name: codex_tools::ToolName::plain("test_tool"),
+            call_id: "call-1".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+        };
+        let result = AnyToolResult {
+            call_id: "call-1".to_string(),
+            payload: ToolPayload::Function {
+                arguments: "{}".to_string(),
+            },
+            result: Box::new(FunctionToolOutput::from_text("ok".to_string(), Some(true))),
+            post_tool_use_payload: None,
+        };
+
+        let err = match apply_after_tool_middleware_with_timeout(
+            &session,
+            &call,
+            result,
+            &ToolCallSource::Direct,
+            Duration::from_millis(1),
+        )
+        .await
+        {
+            Ok(_) => panic!("delayed after middleware should time out"),
+            Err(err) => err,
+        };
+
+        assert_eq!(
+            err,
+            FunctionCallError::RespondToModel(
+                "ToolMiddleware `test.delayed_tool_middleware` failed during ToolAfterCall: middleware exceeded 1ms timeout. Fix: return an after-call decision promptly, or preserve the original tool result"
+                    .to_string()
+            )
         );
         Ok(())
     }
