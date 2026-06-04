@@ -2144,7 +2144,9 @@ dependencies = [
  "codex-feedback",
  "codex-protocol",
  "codex-runtime-api",
+ "core_test_support",
  "pretty_assertions",
+ "serde_json",
  "tempfile",
  "tokio",
 ]
