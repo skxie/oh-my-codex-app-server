@@ -9,6 +9,23 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ---
 
+## About this fork
+
+This fork turns Codex app-server into an open Layer 1 foundation for custom
+agent harness backends. The goal is to let downstream backends reuse Codex's
+thread, turn, tool, sandbox, approval, event, and persistence machinery while
+installing their own runtime behavior through narrow backend extension seams.
+
+Layer 1 stays general-purpose and rebase-friendly. It exposes `RuntimeRegistry`,
+`codex-runtime-api`, and `codex-app-server-sdk` so a Layer 2 backend can adapt
+model request bodies, contribute and select context, observe final
+provider-bound input, repair tool calls, and normalize usage metadata. It does
+not include DeepSeek-specific, Claude-specific, or product-specific behavior;
+that belongs in Layer 2 applications built on top of this foundation.
+
+For the SDK embedding path, see
+[Building a Layer 2 app-server with the SDK](./docs/layer2-app-server-sdk.md).
+
 ## Quickstart
 
 ### Installing and running Codex CLI
@@ -64,6 +81,7 @@ You can also use Codex with an API key, but this requires [additional setup](htt
 ## Docs
 
 - [**Codex Documentation**](https://developers.openai.com/codex)
+- [**Layer 2 app-server SDK**](./docs/layer2-app-server-sdk.md)
 - [**Contributing**](./docs/contributing.md)
 - [**Installing & building**](./docs/install.md)
 - [**Open source fund**](./docs/open-source-fund.md)
