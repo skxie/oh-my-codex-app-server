@@ -10,7 +10,13 @@ on:
       - "codex-rs/app-server-client/**"
       - "codex-rs/app-server-sdk/**"
       - "codex-rs/memories/write/**"
+      - "codex-rs/Cargo.toml"
+      - "codex-rs/Cargo.lock"
+      - "MODULE.bazel.lock"
       - "justfile"
+      - "scripts/verify_layer1_ci.py"
+      - "scripts/test_verify_layer1_ci.py"
+      - ".githooks/pre-push"
       - ".github/workflows/runtime-layer1.yml"
   push:
     branches:
@@ -26,7 +32,13 @@ on:
       - "codex-rs/app-server-client/**"
       - "codex-rs/app-server-sdk/**"
       - "codex-rs/memories/write/**"
+      - "codex-rs/Cargo.toml"
+      - "codex-rs/Cargo.lock"
+      - "MODULE.bazel.lock"
       - "justfile"
+      - "scripts/verify_layer1_ci.py"
+      - "scripts/test_verify_layer1_ci.py"
+      - ".githooks/pre-push"
       - ".github/workflows/runtime-layer1.yml"
   workflow_dispatch:
 

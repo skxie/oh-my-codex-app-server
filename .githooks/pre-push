@@ -1,0 +1,74 @@
+#!/bin/sh
+set -eu
+
+zero_oid=0000000000000000000000000000000000000000
+layer1_ref_pattern='runtime-extension-layer1|layer1|full-ci'
+layer1_path_pattern='^(codex-rs/runtime-api/|codex-rs/core/|codex-rs/codex-api/|codex-rs/app-server/|codex-rs/app-server-client/|codex-rs/app-server-sdk/|codex-rs/memories/write/|codex-rs/Cargo\.toml$|codex-rs/Cargo\.lock$|MODULE\.bazel\.lock$|justfile$|scripts/verify_layer1_ci\.py$|scripts/test_verify_layer1_ci\.py$|\.githooks/pre-push$|\.github/workflows/runtime-layer1\.yml$)'
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+should_run=0
+saw_ref=0
+
+mark_if_layer1_paths_changed() {
+    base_oid=$1
+    head_oid=$2
+
+    if [ "$head_oid" = "$zero_oid" ]; then
+        return
+    fi
+
+    if [ "$base_oid" = "$zero_oid" ]; then
+        merge_base=$(git merge-base "$head_oid" origin/main 2>/dev/null || git merge-base "$head_oid" main 2>/dev/null || true)
+        if [ -n "$merge_base" ]; then
+            base_oid=$merge_base
+        else
+            should_run=1
+            return
+        fi
+    fi
+
+    if git diff --name-only "$base_oid" "$head_oid" 2>/dev/null | grep -Eq "$layer1_path_pattern"; then
+        should_run=1
+    fi
+}
+
+while read -r local_ref local_oid remote_ref remote_oid
+do
+    saw_ref=1
+
+    if [ "$local_oid" = "$zero_oid" ]; then
+        continue
+    fi
+
+    if printf '%s\n%s\n' "$local_ref" "$remote_ref" | grep -Eq "$layer1_ref_pattern"; then
+        should_run=1
+    fi
+
+    mark_if_layer1_paths_changed "$remote_oid" "$local_oid"
+done
+
+if [ "$saw_ref" -eq 0 ]; then
+    current_branch=$(git branch --show-current 2>/dev/null || true)
+    if printf '%s\n' "$current_branch" | grep -Eq "$layer1_ref_pattern"; then
+        should_run=1
+    fi
+fi
+
+if [ "$should_run" -eq 0 ]; then
+    echo "Layer 1 pre-push gate skipped: no Layer 1 refs or paths changed."
+    exit 0
+fi
+
+if [ "${LAYER1_PRE_PUSH_DRY_RUN:-}" = "1" ]; then
+    echo "Layer 1 pre-push gate would run: just pre-push-layer1"
+    exit 0
+fi
+
+if ! command -v just >/dev/null 2>&1; then
+    echo "Layer 1 pre-push gate requires 'just' on PATH." >&2
+    exit 1
+fi
+
+exec just pre-push-layer1

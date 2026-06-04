@@ -94,6 +94,21 @@ tthw-layer1:
 tthw-layer1:
     $start = Get-Date; $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast --no-capture -p codex-app-server runtime_registry_fake_backend_fixture_takes_effect_through_in_process_app_server; $status = $LASTEXITCODE; $elapsed = [int]((Get-Date) - $start).TotalSeconds; Write-Host "tthw-layer1 elapsedSeconds=$elapsed warmTargetSeconds=300"; exit $status
 
+# Validate the local push hook and GitHub workflow wiring for Layer 1.
+[no-cd]
+[unix]
+verify-layer1-ci:
+    sh -n {{ justfile_directory() }}/.githooks/pre-push
+    {{ python }} {{ justfile_directory() }}/scripts/test_verify_layer1_ci.py
+    {{ python }} {{ justfile_directory() }}/scripts/verify_layer1_ci.py
+    printf '%s %s %s %s\n' refs/heads/codex/runtime-extension-layer1 "$(git rev-parse HEAD)" refs/heads/codex/runtime-extension-layer1 0000000000000000000000000000000000000000 | LAYER1_PRE_PUSH_DRY_RUN=1 {{ justfile_directory() }}/.githooks/pre-push
+
+[no-cd]
+[windows]
+verify-layer1-ci:
+    {{ python }} {{ justfile_directory() }}/scripts/test_verify_layer1_ci.py
+    {{ python }} {{ justfile_directory() }}/scripts/verify_layer1_ci.py
+
 # Rebase guard for the fork-owned Layer 1 runtime seams.
 [unix]
 verify-layer1-adapters:
@@ -118,6 +133,7 @@ verify-layer1-adapters:
 # Push-time gate for the fork-owned Layer 1 runtime extension branch.
 [unix]
 pre-push-layer1:
+    just verify-layer1-ci
     just fmt-check
     just verify-layer1-adapters
     just tthw-layer1
@@ -127,6 +143,7 @@ pre-push-layer1:
 
 [windows]
 pre-push-layer1:
+    just verify-layer1-ci
     just fmt-check
     just verify-layer1-adapters
     just tthw-layer1

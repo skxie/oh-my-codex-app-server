@@ -15,7 +15,10 @@ The workflows in this directory are split so that pull requests get fast, review
   - `tools/argument-comment-lint` package tests when the lint or its workflow wiring changes
 - `runtime-layer1.yml` is the fork-owned Layer 1 runtime extension gate. It
   reuses `just pre-push-layer1` so local push-time verification and GitHub CI
-  exercise the same adapter, app-server, and SDK behavior.
+  exercise the same adapter, app-server, and SDK behavior. The versioned
+  `.githooks/pre-push` hook runs that same recipe for Layer 1 branches or when
+  Layer 1 paths change; enable it locally with
+  `git config core.hooksPath .githooks`.
 
 ## Post-Merge On `main`
 
