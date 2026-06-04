@@ -85,6 +85,36 @@ test *args:
 test *args:
     $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; $env:NEXTEST_PROFILE = "local"; cargo nextest run --no-fail-fast @($args | Select-Object -Skip 1)
 
+# Warm-checkout Layer 1 quickstart for downstream runtime extension authors.
+[unix]
+tthw-layer1:
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast --no-capture -p codex-app-server runtime_registry_fake_backend_fixture_takes_effect_through_in_process_app_server
+
+[windows]
+tthw-layer1:
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast --no-capture -p codex-app-server runtime_registry_fake_backend_fixture_takes_effect_through_in_process_app_server
+
+# Rebase guard for the fork-owned Layer 1 runtime seams.
+[unix]
+verify-layer1-adapters:
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-runtime-api
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-api process_sse_exposes_raw_provider_usage_metadata
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-core runtime_model_request_adapter runtime_context runtime_tool_middleware runtime_usage_metadata_mapper_changes_recorded_token_usage
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-app-server-sdk
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-app-server layer2_cookbook_examples
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-app-server runtime_registry_fake_backend_fixture_takes_effect_through_in_process_app_server
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-memories-write
+
+[windows]
+verify-layer1-adapters:
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-runtime-api
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-api process_sse_exposes_raw_provider_usage_metadata
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-core runtime_model_request_adapter runtime_context runtime_tool_middleware runtime_usage_metadata_mapper_changes_recorded_token_usage
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-app-server-sdk
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-app-server layer2_cookbook_examples
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-app-server runtime_registry_fake_backend_fixture_takes_effect_through_in_process_app_server
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-memories-write
+
 # Run from the repository root so scripts that resolve paths from `cwd` see
 # the same layout they use in GitHub Actions.
 [no-cd]

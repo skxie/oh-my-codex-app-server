@@ -14,6 +14,7 @@
 - [Approvals](#approvals)
 - [Skills](#skills)
 - [Apps](#apps)
+- [Runtime Registry Cookbook](#runtime-registry-cookbook)
 - [Auth endpoints](#auth-endpoints)
 - [Experimental API Opt-in](#experimental-api-opt-in)
 
@@ -1908,6 +1909,77 @@ $demo-app Pull the latest updates from the team.
   }
 }
 ```
+
+## Runtime Registry Cookbook
+
+Embedding app-server in-process can provide a custom `codex_runtime_api::RuntimeRegistry`
+through `InProcessStartArgs::runtime_registry`. The registry is a backend runtime
+control plane, not a client protocol extension: app-server still owns thread,
+turn, approval, sandbox, tool execution, transport, and event emission.
+
+Layer 2 backends use one active implementation per capability:
+
+- `ModelRequestAdapter`: receives the stock provider-bound input and tool JSON,
+  then returns the model API request body and response mapper kind.
+- `ContextContributor`: adds stable context blocks into Codex-owned prompt
+  assembly slots.
+- `ContextPolicy`: selects prompt input candidates before model sampling.
+- `ContextAssemblyObserver`: observes the final provider-bound input for tests
+  and diagnostics without mutating it.
+- `ToolMiddleware`: repairs, blocks, or normalizes tool calls/results while
+  preserving approval and sandbox ownership.
+- `UsageMetadataMapper`: maps provider/cache/reasoning usage metadata into
+  existing Codex token usage accounting.
+
+Minimal embedding shape:
+
+```rust
+let mut builder = codex_runtime_api::RuntimeRegistry::builder();
+builder.model_request_adapter(MyModelRequestAdapter)?;
+builder.context_contributor(MyContextContributor)?;
+builder.tool_middleware(MyToolMiddleware)?;
+
+let client = codex_app_server::in_process::start(InProcessStartArgs {
+    runtime_registry: builder.build(),
+    // other startup fields stay the same as the stock in-process host
+    ..args
+})
+.await?;
+```
+
+Take-effect gates live in focused Rust tests:
+
+```bash
+cd codex-rs
+just tthw-layer1
+just verify-layer1-adapters
+just test -p codex-runtime-api
+just test -p codex-core runtime_model_request_adapter_changes_responses_request_body
+just test -p codex-core runtime_context
+just test -p codex-core runtime_tool_middleware
+just test -p codex-core runtime_usage_metadata_mapper_changes_recorded_token_usage
+```
+
+`just tthw-layer1` is the warm-checkout hello-world gate for Layer 2 backend
+authors. It runs the in-process app-server fake backend fixture with output
+capture disabled. Expected proof output includes:
+
+```text
+fake request adapter: apiKind=responses bodyChanged=true
+fake context contributor: stablePrefixFound=true
+context observer: providerBoundInputCaptured=true
+fake tool middleware: repairedArgsApplied=true callIdentityPreserved=true
+usage metadata mapper: rawProviderMetadataConsumed=true promptTokens=11 cachedPromptTokens=3 reasoningTokens=5
+app-server events: thread/start turn/start tokenUsage/updated turn/completed
+```
+
+`just verify-layer1-adapters` is the fork rebase guard: it runs the registry
+tests, focused core take-effect tests, the SDK builder gate, the app-server
+fixture, and the memories-write constructor coverage that exercises the updated
+model client startup path.
+
+These tests prove custom runtime capabilities change the existing Codex runtime
+path without replacing app-server execution.
 
 ## Auth endpoints
 
