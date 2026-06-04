@@ -199,7 +199,7 @@ impl From<VerbosityConfig> for OpenAiVerbosity {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct ResponsesApiRequest {
     pub model: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub instructions: String,
     pub input: Vec<ResponseItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
