@@ -1,0 +1,47 @@
+# Codex App-Server SDK
+
+`codex-app-server-sdk` is the thin Layer 1 embedding surface for custom agent
+harness backends. It does not implement a second app-server runtime. It wraps
+the existing `codex_app_server::in_process` startup contract and lets embedders
+install a custom `codex_runtime_api::RuntimeRegistry`.
+
+## Minimal Usage
+
+```rust
+use codex_app_server_sdk::AppServerBuilder;
+
+let client = AppServerBuilder::new(in_process_start_args)
+    .runtime_registry(runtime_registry)
+    .start()
+    .await?;
+```
+
+`in_process_start_args` is the same `InProcessStartArgs` value that would be
+passed to `codex_app_server::in_process::start`. The SDK keeps Codex app-server
+in charge of:
+
+- `MessageProcessor` startup;
+- thread and turn lifecycle;
+- app-server event delivery;
+- approval and sandbox policy;
+- tool routing and execution;
+- shutdown behavior.
+
+The runtime registry only controls the Layer 1 extension seams exposed by
+`codex-runtime-api`.
+
+## Take-Effect Test
+
+Run the SDK builder gate from `codex-rs`:
+
+```bash
+just test -p codex-app-server-sdk
+```
+
+The test proves a custom registry can be installed through `AppServerBuilder`
+without changing unrelated in-process startup args. The full end-to-end runtime
+proof still lives in the app-server golden fixture:
+
+```bash
+just tthw-layer1
+```

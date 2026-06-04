@@ -2006,6 +2006,7 @@ dependencies = [
  "codex-protocol",
  "codex-rmcp-client",
  "codex-rollout",
+ "codex-runtime-api",
  "codex-sandboxing",
  "codex-shell-command",
  "codex-skills-extension",
@@ -2063,6 +2064,7 @@ dependencies = [
  "codex-exec-server",
  "codex-feedback",
  "codex-protocol",
+ "codex-runtime-api",
  "codex-uds",
  "codex-utils-absolute-path",
  "codex-utils-rustls-provider",
@@ -2125,6 +2127,25 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "codex-app-server-sdk"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "codex-app-server",
+ "codex-app-server-protocol",
+ "codex-arg0",
+ "codex-config",
+ "codex-core",
+ "codex-exec-server",
+ "codex-feedback",
+ "codex-protocol",
+ "codex-runtime-api",
+ "pretty_assertions",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -2683,6 +2704,7 @@ dependencies = [
  "codex-rmcp-client",
  "codex-rollout",
  "codex-rollout-trace",
+ "codex-runtime-api",
  "codex-sandboxing",
  "codex-shell-command",
  "codex-shell-escalation",
@@ -3479,6 +3501,7 @@ dependencies = [
  "codex-protocol",
  "codex-rollout",
  "codex-rollout-trace",
+ "codex-runtime-api",
  "codex-secrets",
  "codex-state",
  "codex-terminal-detection",
@@ -3848,6 +3871,17 @@ dependencies = [
  "tempfile",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "codex-runtime-api"
+version = "0.0.0"
+dependencies = [
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio-test",
 ]
 
 [[package]]
@@ -4727,6 +4761,7 @@ dependencies = [
  "codex-model-provider-info",
  "codex-models-manager",
  "codex-protocol",
+ "codex-runtime-api",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
  "codex-utils-path-uri",
