@@ -77,22 +77,31 @@ pub(crate) async fn select_prompt_input(
         .enumerate()
         .map(|(index, item)| (context_candidate_id(index), item.clone()))
         .collect::<HashMap<_, _>>();
-    validate_context_policy_selection(turn_id, &input, &selected)?;
+    validate_context_policy_selection(registry, turn_id, &input, &selected)?;
     let mut output = Vec::with_capacity(selected.len());
     for candidate in selected {
         let item = input_by_id.get(&candidate.id).ok_or_else(|| {
-            CodexErr::InvalidRequest(format!(
-                "runtime context policy selected unknown candidate id `{}` for turn `{turn_id}`",
-                candidate.id
-            ))
+            context_policy_invalid_decision(
+                registry,
+                turn_id,
+                format!("selected unknown candidate id `{}`", candidate.id),
+                "the policy returned a candidate id that was not present in the input set",
+                "select only candidate ids supplied in ContextPolicyInput",
+                Some("context-policy-unknown-candidate"),
+            )
         })?;
         let original_candidate = candidates_by_id.get(&candidate.id).ok_or_else(|| {
-            CodexErr::InvalidRequest(format!(
-                "runtime context policy selected unknown candidate id `{}` for turn `{turn_id}`",
-                candidate.id
-            ))
+            context_policy_invalid_decision(
+                registry,
+                turn_id,
+                format!("selected unknown candidate id `{}`", candidate.id),
+                "the policy returned a candidate id that was not present in the input set",
+                "select only candidate ids supplied in ContextPolicyInput",
+                Some("context-policy-unknown-candidate"),
+            )
         })?;
         output.push(response_item_for_selected_candidate(
+            registry,
             turn_id,
             &candidate,
             item,
@@ -201,17 +210,22 @@ fn function_output_text(output: &FunctionCallOutputPayload) -> String {
 }
 
 fn response_item_for_selected_candidate(
+    registry: &RuntimeRegistry,
     turn_id: &str,
     candidate: &ContextCandidate,
     original: &ResponseItem,
     original_candidate: &ContextCandidate,
 ) -> CodexResult<ResponseItem> {
-    candidate_index_from_id(&candidate.id, turn_id)?;
+    candidate_index_from_id(registry, &candidate.id, turn_id)?;
     if candidate.source != original_candidate.source {
-        return Err(CodexErr::InvalidRequest(format!(
-            "runtime context policy changed candidate `{}` source for turn `{turn_id}`",
-            candidate.id
-        )));
+        return Err(context_policy_invalid_decision(
+            registry,
+            turn_id,
+            format!("changed candidate `{}` source", candidate.id),
+            "the policy changed source metadata for a selected candidate",
+            "preserve candidate source metadata and only select or rewrite allowed history content",
+            Some("context-policy-changed-candidate-source"),
+        ));
     }
     if candidate.content == original_candidate.content {
         return Ok(original.clone());
@@ -226,24 +240,37 @@ fn response_item_for_selected_candidate(
             phase: None,
             internal_chat_message_metadata_passthrough: None,
         }),
-        ContextCandidateSource::CurrentUserInput => Err(CodexErr::InvalidRequest(format!(
-            "runtime context policy cannot rewrite current user input candidate `{}` for turn `{turn_id}`",
-            candidate.id
-        ))),
-        ContextCandidateSource::ToolCallResultPair => Err(CodexErr::InvalidRequest(format!(
-            "runtime context policy cannot rewrite tool call/result candidate `{}` for turn `{turn_id}`",
-            candidate.id
-        ))),
+        ContextCandidateSource::CurrentUserInput => Err(context_policy_invalid_decision(
+            registry,
+            turn_id,
+            format!("rewrote current user input candidate `{}`", candidate.id),
+            "the policy attempted to mutate the current user input",
+            "keep the current user input unchanged",
+            Some("context-policy-rewrite-current-user-input"),
+        )),
+        ContextCandidateSource::ToolCallResultPair => Err(context_policy_invalid_decision(
+            registry,
+            turn_id,
+            format!("rewrote tool call/result candidate `{}`", candidate.id),
+            "the policy attempted to mutate a tool call/result candidate",
+            "keep tool call/result candidates unchanged and paired",
+            Some("context-policy-rewrite-tool-pair"),
+        )),
         ContextCandidateSource::Contributor
         | ContextCandidateSource::ClientAdditionalContext
-        | ContextCandidateSource::Environment => Err(CodexErr::InvalidRequest(format!(
-            "runtime context policy cannot rewrite non-history candidate `{}` for turn `{turn_id}`",
-            candidate.id
-        ))),
+        | ContextCandidateSource::Environment => Err(context_policy_invalid_decision(
+            registry,
+            turn_id,
+            format!("rewrote non-history candidate `{}`", candidate.id),
+            "the policy attempted to mutate a non-history candidate",
+            "only rewrite history candidates when replacing them with summaries",
+            Some("context-policy-rewrite-non-history"),
+        )),
     }
 }
 
 fn validate_context_policy_selection(
+    registry: &RuntimeRegistry,
     turn_id: &str,
     input: &[ResponseItem],
     selected: &[ContextCandidate],
@@ -259,9 +286,14 @@ fn validate_context_policy_selection(
             ContextCandidateSource::CurrentUserInput
         ) && !selected_ids.contains(id.as_str())
         {
-            return Err(CodexErr::InvalidRequest(format!(
-                "runtime context policy removed current user input candidate `{id}` for turn `{turn_id}`"
-            )));
+            return Err(context_policy_invalid_decision(
+                registry,
+                turn_id,
+                format!("removed current user input candidate `{id}`"),
+                "the policy omitted the current user input from the final context",
+                "always include the current user input candidate",
+                Some("context-policy-removed-current-user-input"),
+            ));
         }
     }
 
@@ -270,23 +302,61 @@ fn validate_context_policy_selection(
         if selected_pairs.contains(&pair)
             && !tool_pair_is_fully_selected(input, &selected_ids, &pair)
         {
-            return Err(CodexErr::InvalidRequest(format!(
-                "runtime context policy selected only part of tool call/result pair `{}` for turn `{turn_id}`",
-                pair.1
-            )));
+            return Err(context_policy_invalid_decision(
+                registry,
+                turn_id,
+                format!("selected only part of tool call/result pair `{}`", pair.1),
+                "the policy omitted one side of a tool call/result pair",
+                "select complete tool call/result pairs together or omit both sides",
+                Some("context-policy-orphaned-tool-pair"),
+            ));
         }
     }
     Ok(())
 }
 
-fn candidate_index_from_id(id: &str, turn_id: &str) -> CodexResult<usize> {
+fn candidate_index_from_id(
+    registry: &RuntimeRegistry,
+    id: &str,
+    turn_id: &str,
+) -> CodexResult<usize> {
     id.strip_prefix("item-")
         .and_then(|index| index.parse::<usize>().ok())
         .ok_or_else(|| {
-            CodexErr::InvalidRequest(format!(
-                "runtime context policy selected invalid candidate id `{id}` for turn `{turn_id}`"
-            ))
+            context_policy_invalid_decision(
+                registry,
+                turn_id,
+                format!("selected invalid candidate id `{id}`"),
+                "the policy returned a candidate id outside the documented item-N format",
+                "preserve candidate ids exactly as supplied in ContextPolicyInput",
+                Some("context-policy-invalid-candidate-id"),
+            )
         })
+}
+
+fn context_policy_invalid_decision(
+    registry: &RuntimeRegistry,
+    turn_id: &str,
+    what_happened: impl Into<String>,
+    why_likely: impl Into<String>,
+    how_to_fix: impl Into<String>,
+    docs_anchor: Option<&str>,
+) -> CodexErr {
+    CodexErr::InvalidRequest(
+        RuntimeExtensionErrorInfo::new(
+            RuntimeCapability::ContextPolicy,
+            registry.context_policy_id().to_string(),
+            RuntimeExtensionPhase::ContextSelection,
+            format!(
+                "invalid decision for turn `{turn_id}`: {}",
+                what_happened.into()
+            ),
+            why_likely,
+            how_to_fix,
+            docs_anchor,
+        )
+        .to_string(),
+    )
 }
 
 fn selected_tool_pair_keys(
@@ -568,7 +638,7 @@ mod tests {
         match err {
             CodexErr::InvalidRequest(message) => assert_eq!(
                 message,
-                "runtime context policy selected only part of tool call/result pair `call-1` for turn `turn-test`"
+                "ContextPolicy `test.orphan_tool_result` failed during ContextSelection: invalid decision for turn `turn-test`: selected only part of tool call/result pair `call-1`. Likely cause: the policy omitted one side of a tool call/result pair. Fix: select complete tool call/result pairs together or omit both sides. Docs: context-policy-orphaned-tool-pair"
             ),
             other => panic!("unexpected error: {other}"),
         }

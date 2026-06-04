@@ -382,6 +382,11 @@ async fn apply_before_tool_middleware_with_timeout(
     timeout_duration: Duration,
 ) -> Result<BeforeToolMiddlewareOutcome, FunctionCallError> {
     let runtime_call = to_runtime_tool_call(&call, source);
+    let middleware_id = session
+        .services
+        .runtime_registry
+        .tool_middleware_id()
+        .to_string();
     let decision = timeout(
         timeout_duration,
         session
@@ -394,7 +399,7 @@ async fn apply_before_tool_middleware_with_timeout(
         FunctionCallError::RespondToModel(
             RuntimeExtensionErrorInfo::new(
                 RuntimeCapability::ToolMiddleware,
-                session.services.runtime_registry.tool_middleware_id().to_string(),
+                middleware_id.clone(),
                 RuntimeExtensionPhase::ToolBeforeCall,
                 format!("middleware exceeded {}ms timeout", timeout_duration.as_millis()),
                 "the middleware waited too long before returning a decision",
@@ -407,8 +412,12 @@ async fn apply_before_tool_middleware_with_timeout(
     .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
     let Some(effective_call) = decision.effective_call(&runtime_call) else {
         let ToolCallDecision::Block { reason } = decision else {
-            return Err(FunctionCallError::RespondToModel(
-                "runtime tool middleware returned no effective call".to_string(),
+            return Err(tool_middleware_invalid_before_decision(
+                &middleware_id,
+                "returned no effective call without a block reason",
+                "the middleware returned an inconsistent before-call decision",
+                "return Continue, Repair with valid arguments, or Block with a model-visible reason",
+                Some("tool-middleware-invalid-before-decision"),
             ));
         };
         return Ok(BeforeToolMiddlewareOutcome::Blocked(blocked_tool_result(
@@ -428,12 +437,16 @@ async fn apply_before_tool_middleware_with_timeout(
         || effective_call.tool_name != runtime_call.tool_name
         || effective_call.source != runtime_call.source
     {
-        return Err(FunctionCallError::RespondToModel(
-            "runtime tool middleware cannot change tool call identity".to_string(),
+        return Err(tool_middleware_invalid_before_decision(
+            &middleware_id,
+            "changed tool call identity",
+            "the middleware attempted to change call id, tool name, or source",
+            "preserve call identity and repair only arguments",
+            Some("tool-middleware-changed-call-identity"),
         ));
     }
     Ok(BeforeToolMiddlewareOutcome::Dispatch(
-        apply_runtime_arguments(call, effective_call.arguments)?,
+        apply_runtime_arguments(&middleware_id, call, effective_call.arguments)?,
     ))
 }
 
@@ -526,6 +539,7 @@ fn to_runtime_tool_call(call: &ToolCall, source: &ToolCallSource) -> RuntimeTool
 }
 
 fn apply_runtime_arguments(
+    middleware_id: &str,
     mut call: ToolCall,
     arguments: serde_json::Value,
 ) -> Result<ToolCall, FunctionCallError> {
@@ -539,14 +553,39 @@ fn apply_runtime_arguments(
         ToolPayload::ToolSearch { .. } => {
             let arguments: SearchToolCallParams =
                 serde_json::from_value(arguments).map_err(|err| {
-                    FunctionCallError::RespondToModel(format!(
-                        "runtime tool middleware returned invalid tool_search arguments: {err}"
-                    ))
+                    tool_middleware_invalid_before_decision(
+                        middleware_id,
+                        format!("returned invalid tool_search arguments: {err}"),
+                        "the repaired arguments did not match the original tool_search schema",
+                        "return repaired arguments that match the original tool payload schema",
+                        Some("tool-middleware-invalid-repair"),
+                    )
                 })?;
             ToolPayload::ToolSearch { arguments }
         }
     };
     Ok(call)
+}
+
+fn tool_middleware_invalid_before_decision(
+    middleware_id: &str,
+    what_happened: impl Into<String>,
+    why_likely: impl Into<String>,
+    how_to_fix: impl Into<String>,
+    docs_anchor: Option<&str>,
+) -> FunctionCallError {
+    FunctionCallError::RespondToModel(
+        RuntimeExtensionErrorInfo::new(
+            RuntimeCapability::ToolMiddleware,
+            middleware_id,
+            RuntimeExtensionPhase::ToolBeforeCall,
+            what_happened,
+            why_likely,
+            how_to_fix,
+            docs_anchor,
+        )
+        .to_string(),
+    )
 }
 
 fn runtime_arguments_to_string(arguments: serde_json::Value) -> String {
@@ -759,6 +798,7 @@ mod tests {
     struct BlockArgumentsMiddleware;
     struct NormalizeResultMiddleware;
     struct DelayedToolMiddleware;
+    struct InvalidToolSearchRepairMiddleware;
 
     impl ToolExecutor<ToolInvocation> for ImmediateHandler {
         fn tool_name(&self) -> codex_tools::ToolName {
@@ -924,6 +964,31 @@ mod tests {
         ) -> Result<codex_runtime_api::ToolResultDecision, codex_runtime_api::ToolMiddlewareError>
         {
             tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok(codex_runtime_api::ToolResultDecision::Preserve)
+        }
+    }
+
+    impl codex_runtime_api::ToolMiddleware for InvalidToolSearchRepairMiddleware {
+        fn id(&self) -> codex_runtime_api::ToolMiddlewareId {
+            codex_runtime_api::ToolMiddlewareId::new("test.invalid_tool_search_repair")
+        }
+
+        async fn before_tool_call(
+            &self,
+            _call: codex_runtime_api::ToolCall,
+        ) -> Result<codex_runtime_api::ToolCallDecision, codex_runtime_api::ToolMiddlewareError>
+        {
+            Ok(codex_runtime_api::ToolCallDecision::Repair {
+                repaired_arguments: serde_json::json!("not a search argument object"),
+            })
+        }
+
+        async fn after_tool_call(
+            &self,
+            _call: codex_runtime_api::ToolCall,
+            _result: codex_runtime_api::ToolResult,
+        ) -> Result<codex_runtime_api::ToolResultDecision, codex_runtime_api::ToolMiddlewareError>
+        {
             Ok(codex_runtime_api::ToolResultDecision::Preserve)
         }
     }
@@ -1365,6 +1430,48 @@ mod tests {
                     .to_string()
             )
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_tool_middleware_invalid_repair_returns_runtime_error() -> anyhow::Result<()> {
+        let (mut session, _turn_context) = crate::session::tests::make_session_and_context().await;
+        let mut builder = codex_runtime_api::RuntimeRegistry::builder();
+        builder
+            .tool_middleware(InvalidToolSearchRepairMiddleware)
+            .expect("register invalid repair middleware");
+        session.services.runtime_registry = builder.build();
+        let session = Arc::new(session);
+        let call = ToolCall {
+            tool_name: codex_tools::ToolName::plain("tool_search"),
+            call_id: "call-1".to_string(),
+            payload: ToolPayload::ToolSearch {
+                arguments: SearchToolCallParams {
+                    query: "codex".to_string(),
+                    limit: Some(1),
+                },
+            },
+        };
+
+        let err = match apply_before_tool_middleware_with_timeout(
+            &session,
+            call,
+            &ToolCallSource::Direct,
+            Duration::from_millis(100),
+        )
+        .await
+        {
+            Ok(_) => panic!("invalid repaired tool_search arguments should fail"),
+            Err(err) => err,
+        };
+
+        match err {
+            FunctionCallError::RespondToModel(message) => assert_eq!(
+                message,
+                "ToolMiddleware `test.invalid_tool_search_repair` failed during ToolBeforeCall: returned invalid tool_search arguments: invalid type: string \"not a search argument object\", expected struct SearchToolCallParams. Likely cause: the repaired arguments did not match the original tool_search schema. Fix: return repaired arguments that match the original tool payload schema. Docs: tool-middleware-invalid-repair"
+            ),
+            other => panic!("unexpected error: {other}"),
+        }
         Ok(())
     }
 
