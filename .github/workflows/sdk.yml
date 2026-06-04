@@ -1,13 +1,13 @@
 name: sdk
 
 on:
-  workflow_call:
+  push:
+    branches: [main]
+  pull_request: {}
 
 jobs:
   python-sdk:
-    runs-on:
-      group: ${{ github.event.repository.name }}-runners
-      labels: ${{ github.event.repository.name }}-linux-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout repository
@@ -44,9 +44,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   sdks:
-    runs-on:
-      group: ${{ github.event.repository.name }}-runners
-      labels: ${{ github.event.repository.name }}-linux-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment:
       name: bazel

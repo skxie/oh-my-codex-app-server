@@ -39,9 +39,9 @@ anyhow = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
-codex-app-server-sdk = { git = "https://github.com/skxie/codex.git", branch = "codex/runtime-extension-layer1", package = "codex-app-server-sdk" }
-codex-runtime-api = { git = "https://github.com/skxie/codex.git", branch = "codex/runtime-extension-layer1", package = "codex-runtime-api" }
-codex-app-server-protocol = { git = "https://github.com/skxie/codex.git", branch = "codex/runtime-extension-layer1", package = "codex-app-server-protocol" }
+codex-app-server-sdk = { git = "https://github.com/skxie/codex.git", branch = "main", package = "codex-app-server-sdk" }
+codex-runtime-api = { git = "https://github.com/skxie/codex.git", branch = "main", package = "codex-runtime-api" }
+codex-app-server-protocol = { git = "https://github.com/skxie/codex.git", branch = "main", package = "codex-app-server-protocol" }
 ```
 
 If the Layer 2 backend lives inside this workspace, use path dependencies
@@ -363,8 +363,8 @@ runtime take-effect:
 
 - `config/requirements/read`, `thread/start`, and `turn/start` work through the
   SDK-created client.
-- `ModelRequestAdapter` adds `client_metadata.source =
-  "layer2-sdk-agent-server"` to the provider request body.
+- `ModelRequestAdapter` adds `client_metadata.source` with
+  `layer2-sdk-agent-server` to the provider request body.
 - `ContextContributor` injects a stable context prefix into outbound model
   input.
 - `ContextPolicy` replaces prior history with a Layer 2 summary before the

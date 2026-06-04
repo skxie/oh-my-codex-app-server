@@ -1,89 +1,80 @@
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+# Open Codex App-Server Foundation
 
----
+This fork turns the Codex app-server into a reusable Layer 1 foundation for
+custom agent harness backends.
 
-## About this fork
+The goal is to let downstream backends reuse Codex's thread, turn, tool,
+sandbox, approval, event, and persistence machinery while installing their own
+runtime behavior through narrow backend extension seams. The fork stays
+general-purpose: DeepSeek-specific, Claude-specific, memory-product, or UI
+behavior belongs in downstream Layer 2 and Layer 3 projects.
 
-This fork turns Codex app-server into an open Layer 1 foundation for custom
-agent harness backends. The goal is to let downstream backends reuse Codex's
-thread, turn, tool, sandbox, approval, event, and persistence machinery while
-installing their own runtime behavior through narrow backend extension seams.
+## Architecture
 
-Layer 1 stays general-purpose and rebase-friendly. It exposes `RuntimeRegistry`,
-`codex-runtime-api`, and `codex-app-server-sdk` so a Layer 2 backend can adapt
-model request bodies, contribute and select context, observe final
-provider-bound input, repair tool calls, and normalize usage metadata. It does
-not include DeepSeek-specific, Claude-specific, or product-specific behavior;
-that belongs in Layer 2 applications built on top of this foundation.
+```text
+Layer 1: Open Codex app-server foundation fork
+  Runtime APIs, RuntimeRegistry, app-server SDK, protocol exposure.
 
-For the SDK embedding path, see
+Layer 2: Custom agent harness backend
+  Model request adaptation, context policy, tool repair, usage mapping,
+  memory, provider-specific behavior, and product logic.
+
+Layer 3: Application clients
+  TUI, desktop app, mobile app, web app, approval UI, and session UX.
+```
+
+Codex app-server remains the owner of thread lifecycle, turn execution,
+approval, sandbox, tool routing, event emission, and persistence. Layer 2 code
+can opt into the new runtime surfaces to adapt model request bodies, contribute
+and select context, observe final provider-bound input, repair tool calls, and
+normalize usage metadata.
+
+## What This Fork Adds
+
+- `codex-runtime-api`: stable boundary types and traits for runtime extension
+  capabilities.
+- `RuntimeRegistry`: the composition point for one active implementation per
+  runtime capability.
+- `codex-app-server-sdk`: an embedding path for building a Layer 2 app-server
+  that still uses the existing Codex app-server runtime.
+- Runtime take-effect tests and CI gates that prove custom context, model
+  request, tool repair, and usage behavior flow through app-server.
+
+For the detailed SDK path, see
 [Building a Layer 2 app-server with the SDK](./docs/layer2-app-server-sdk.md).
 
-## Quickstart
+## Upstream Codex
 
-### Installing and running Codex CLI
+This fork is based on [OpenAI Codex](https://github.com/openai/codex), a local
+coding agent that can run in your terminal, IDE, or desktop app.
 
-Run the following on Mac or Linux to install Codex CLI:
+To install upstream Codex CLI on Mac or Linux:
 
 ```shell
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
 ```
 
-Run the following on Windows to install Codex CLI:
+To install upstream Codex CLI on Windows:
 
-```shell
+```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
 ```
 
-Codex CLI can also be installed via the following package managers:
+Codex CLI can also be installed with npm or Homebrew:
 
 ```shell
-# Install using npm
 npm install -g @openai/codex
-```
-
-```shell
-# Install using Homebrew
 brew install --cask codex
 ```
 
-Then simply run `codex` to get started.
+Run `codex` to get started with the CLI, or run `codex app` for the desktop app
+experience.
 
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+## Documentation
 
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
-
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
-
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
-
-</details>
-
-### Using Codex with your ChatGPT plan
-
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
-
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
-
-## Docs
-
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Layer 2 app-server SDK**](./docs/layer2-app-server-sdk.md)
-- [**Contributing**](./docs/contributing.md)
-- [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
+- [Layer 2 app-server SDK](./docs/layer2-app-server-sdk.md)
+- [Upstream Codex documentation](https://developers.openai.com/codex)
+- [Contributing](./docs/contributing.md)
+- [Installing and building](./docs/install.md)
 
 This repository is licensed under the [Apache-2.0 License](LICENSE).
