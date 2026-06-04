@@ -1931,6 +1931,19 @@ Layer 2 backends use one active implementation per capability:
 - `UsageMetadataMapper`: maps provider/cache/reasoning usage metadata into
   existing Codex token usage accounting.
 
+Boundary notes:
+
+- Runtime extension seams apply to regular turn model requests. Manual and
+  automatic history compaction remain Codex-owned and do not currently pass
+  through `ModelRequestAdapter` or `ContextAssemblyObserver`.
+- `ModelRequestAdapter` chooses the provider request body shape and response
+  mapper kind. It does not choose the network transport. The current websocket
+  Responses transport accepts only the stock Responses mapper; adapters that
+  select `ChatCompletions` must run on the HTTP path.
+- Prefer `AppServerBuilder::from_client_start_args(...)` for downstream
+  harnesses. Direct `InProcessStartArgs` construction is a low-level embedding
+  path and may need updates when app-server startup wiring changes.
+
 Minimal SDK embedding shape:
 
 ```rust
@@ -1974,6 +1987,7 @@ capture disabled. Expected proof output includes:
 fake request adapter: apiKind=responses bodyChanged=true
 fake context contributor: stablePrefixFound=true
 context observer: providerBoundInputCaptured=true
+fake context policy: historySummaryApplied=true
 fake tool middleware: repairedArgsApplied=true callIdentityPreserved=true
 usage metadata mapper: rawProviderMetadataConsumed=true promptTokens=11 cachedPromptTokens=3 reasoningTokens=5
 app-server events: thread/start turn/start tokenUsage/updated turn/completed

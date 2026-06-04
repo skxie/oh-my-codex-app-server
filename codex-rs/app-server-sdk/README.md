@@ -62,9 +62,11 @@ Run the SDK builder gate from `codex-rs`:
 just test -p codex-app-server-sdk
 ```
 
-The test proves a custom registry can be installed through `AppServerBuilder`
-without changing unrelated in-process startup args. The full end-to-end runtime
-proof still lives in the app-server golden fixture:
+The tests prove a custom registry can be installed through `AppServerBuilder`
+without changing unrelated in-process startup args, and that a real SDK client
+can call stock app-server RPCs while custom runtime capabilities affect the
+outbound model request, tool calls, usage accounting, and final turn events.
+The app-server golden fixture remains the focused backend hello-world gate:
 
 ```bash
 just tthw-layer1

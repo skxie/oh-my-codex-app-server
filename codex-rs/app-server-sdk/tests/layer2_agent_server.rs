@@ -33,10 +33,15 @@ use codex_runtime_api::ContextAssemblyObserverId;
 use codex_runtime_api::ContextAssemblyObserverInput;
 use codex_runtime_api::ContextBlock;
 use codex_runtime_api::ContextBlockSlot;
+use codex_runtime_api::ContextCandidateSource;
 use codex_runtime_api::ContextContributor;
 use codex_runtime_api::ContextContributorId;
 use codex_runtime_api::ContextContributorInput;
 use codex_runtime_api::ContextError;
+use codex_runtime_api::ContextPolicy;
+use codex_runtime_api::ContextPolicyDecision;
+use codex_runtime_api::ContextPolicyId;
+use codex_runtime_api::ContextPolicyInput;
 use codex_runtime_api::ModelApiRequest;
 use codex_runtime_api::ModelRequestAdapter;
 use codex_runtime_api::ModelRequestAdapterError;
@@ -72,6 +77,7 @@ use tokio::time::Duration;
 use tokio::time::timeout;
 
 const LAYER2_CONTEXT: &str = "layer2-sdk-context: stable prefix from custom backend";
+const LAYER2_POLICY_SUMMARY: &str = "layer2-policy-summary: prior user intent compressed";
 const LAYER2_TOOL_NAME: &str = "layer2_lookup";
 const LAYER2_TOOL_CALL_ID: &str = "call-layer2";
 
@@ -134,6 +140,36 @@ impl ContextContributor for Layer2ContextContributor {
             source: "layer2-test".to_string(),
             metadata: BTreeMap::new(),
         }])
+    }
+}
+
+struct Layer2ContextPolicy;
+
+impl ContextPolicy for Layer2ContextPolicy {
+    fn id(&self) -> ContextPolicyId {
+        ContextPolicyId::new("layer2.test.context_policy")
+    }
+
+    async fn select_context(
+        &self,
+        input: ContextPolicyInput,
+    ) -> Result<ContextPolicyDecision, ContextError> {
+        Ok(ContextPolicyDecision {
+            selected: input
+                .candidates
+                .into_iter()
+                .map(|mut candidate| {
+                    if matches!(candidate.source, ContextCandidateSource::History)
+                        && candidate
+                            .content
+                            .contains("Run the SDK Layer 2 server fixture")
+                    {
+                        candidate.content = LAYER2_POLICY_SUMMARY.to_string();
+                    }
+                    candidate
+                })
+                .collect(),
+        })
     }
 }
 
@@ -380,7 +416,8 @@ async fn sdk_starts_runnable_layer2_agent_server_client_with_codex_and_runtime_c
                         "completion_tokens": 21,
                         "cached_prompt_tokens": 5,
                         "cache_miss_prompt_tokens": 8,
-                        "reasoning_tokens": 3
+                        "reasoning_tokens": 3,
+                        "total_tokens": 34
                     }
                 }
             }
@@ -400,6 +437,7 @@ async fn sdk_starts_runnable_layer2_agent_server_client_with_codex_and_runtime_c
     registry
         .model_request_adapter(Layer2ModelRequestAdapter)?
         .context_contributor(Layer2ContextContributor)?
+        .context_policy(Layer2ContextPolicy)?
         .context_assembly_observer(observer)?
         .tool_middleware(middleware)?
         .usage_metadata_mapper(Layer2UsageMapper)?;
@@ -502,11 +540,12 @@ async fn sdk_starts_runnable_layer2_agent_server_client_with_codex_and_runtime_c
     assert_eq!(usage.token_usage.last.cached_input_tokens, 5);
     assert_eq!(usage.token_usage.last.output_tokens, 21);
     assert_eq!(usage.token_usage.last.reasoning_output_tokens, 3);
-    assert_eq!(usage.token_usage.last.total_tokens, 37);
+    assert_eq!(usage.token_usage.last.total_tokens, 34);
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 2);
     let first_body = requests[0].body_json();
+    let second_body = requests[1].body_json();
     assert_eq!(
         first_body["client_metadata"],
         json!({
@@ -514,6 +553,10 @@ async fn sdk_starts_runnable_layer2_agent_server_client_with_codex_and_runtime_c
         })
     );
     assert!(value_contains_text(&first_body["input"], LAYER2_CONTEXT));
+    assert!(value_contains_text(
+        &second_body["input"],
+        LAYER2_POLICY_SUMMARY
+    ));
     let tool_output = requests[1].function_call_output(LAYER2_TOOL_CALL_ID);
     assert_eq!(
         tool_output["call_id"],

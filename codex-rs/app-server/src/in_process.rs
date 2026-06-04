@@ -757,10 +757,15 @@ mod tests {
     use codex_runtime_api::ContextAssemblyObserverInput;
     use codex_runtime_api::ContextBlock;
     use codex_runtime_api::ContextBlockSlot;
+    use codex_runtime_api::ContextCandidateSource;
     use codex_runtime_api::ContextContributor;
     use codex_runtime_api::ContextContributorId;
     use codex_runtime_api::ContextContributorInput;
     use codex_runtime_api::ContextError;
+    use codex_runtime_api::ContextPolicy;
+    use codex_runtime_api::ContextPolicyDecision;
+    use codex_runtime_api::ContextPolicyId;
+    use codex_runtime_api::ContextPolicyInput;
     use codex_runtime_api::ModelApiKind;
     use codex_runtime_api::ModelApiRequest;
     use codex_runtime_api::ModelRequestAdapter;
@@ -794,6 +799,7 @@ mod tests {
     use tempfile::TempDir;
 
     const RUNTIME_FIXTURE_CONTEXT: &str = "runtime fixture contributed context";
+    const RUNTIME_FIXTURE_CONTEXT_POLICY_SUMMARY: &str = "runtime fixture context policy summary";
     const RUNTIME_FIXTURE_TOOL_NAME: &str = "runtime_fixture_tool";
     const RUNTIME_FIXTURE_TOOL_CALL_ID: &str = "runtime-tool-call-1";
 
@@ -844,6 +850,34 @@ mod tests {
                 source: "runtime-fixture".to_string(),
                 metadata: BTreeMap::new(),
             }])
+        }
+    }
+
+    struct RuntimeFixtureContextPolicy;
+
+    impl ContextPolicy for RuntimeFixtureContextPolicy {
+        fn id(&self) -> ContextPolicyId {
+            ContextPolicyId::new("test.runtime_fixture.context_policy")
+        }
+
+        async fn select_context(
+            &self,
+            input: ContextPolicyInput,
+        ) -> std::result::Result<ContextPolicyDecision, ContextError> {
+            Ok(ContextPolicyDecision {
+                selected: input
+                    .candidates
+                    .into_iter()
+                    .map(|mut candidate| {
+                        if candidate.source == ContextCandidateSource::History
+                            && candidate.content.contains("Hello runtime fixture")
+                        {
+                            candidate.content = RUNTIME_FIXTURE_CONTEXT_POLICY_SUMMARY.to_string();
+                        }
+                        candidate
+                    })
+                    .collect(),
+            })
         }
     }
 
@@ -1324,6 +1358,8 @@ stream_max_retries = 0
             .expect("model request adapter should register")
             .context_contributor(RuntimeFixtureContextContributor)
             .expect("context contributor should register")
+            .context_policy(RuntimeFixtureContextPolicy)
+            .expect("context policy should register")
             .context_assembly_observer(observer)
             .expect("context observer should register")
             .tool_middleware(middleware)
@@ -1442,6 +1478,17 @@ stream_max_retries = 0
             value_contains_text(&body["input"], RUNTIME_FIXTURE_CONTEXT),
             "runtime contributor context should reach the provider-bound request"
         );
+        assert!(
+            !value_contains_text(&body["input"], RUNTIME_FIXTURE_CONTEXT_POLICY_SUMMARY),
+            "runtime context policy should not rewrite current user input on the first request"
+        );
+        assert!(
+            value_contains_text(
+                &requests[1].body_json()["input"],
+                RUNTIME_FIXTURE_CONTEXT_POLICY_SUMMARY
+            ),
+            "runtime context policy should rewrite history on the second provider-bound request"
+        );
         let tool_output = requests[1].function_call_output(RUNTIME_FIXTURE_TOOL_CALL_ID);
         assert_eq!(
             tool_output["call_id"],
@@ -1467,6 +1514,7 @@ stream_max_retries = 0
         write_fixture_proof_line("fake request adapter: apiKind=responses bodyChanged=true");
         write_fixture_proof_line("fake context contributor: stablePrefixFound=true");
         write_fixture_proof_line("context observer: providerBoundInputCaptured=true");
+        write_fixture_proof_line("fake context policy: historySummaryApplied=true");
         write_fixture_proof_line(
             "fake tool middleware: repairedArgsApplied=true callIdentityPreserved=true",
         );
