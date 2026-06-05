@@ -60,8 +60,8 @@ jobs:
 def good_justfile() -> str:
     return """pre-push-layer1-ci:
     just verify-layer1-ci
-    just bazel-lock-check
-    just fmt-check
+    RUST_MIN_STACK=16777216 cargo nextest run --no-fail-fast -p codex-app-server layer2_cookbook_examples
+    RUST_MIN_STACK=16777216 cargo nextest run --no-fail-fast -p codex-app-server runtime_registry_fake_backend_fixture
 
 pre-push-layer1:
     just verify-layer1-ci
@@ -182,6 +182,47 @@ class VerifyLayer1CiTests(unittest.TestCase):
 
         self.assertIn(
             "pre-push-layer1-ci must not run the full codex-app-server suite",
+            errors,
+        )
+
+    def test_ci_gate_must_stay_app_server_scoped(self) -> None:
+        justfile = good_justfile().replace(
+            "pre-push-layer1:\n",
+            "    just verify-layer1-adapters\n    just bench-smoke\n\npre-push-layer1:\n",
+        )
+
+        errors = verify_layer1_ci.validate_layer1_ci(
+            good_hook(),
+            good_workflow(),
+            justfile,
+            hook_executable=True,
+            enforce_executable=True,
+        )
+
+        self.assertIn(
+            "pre-push-layer1-ci must not run `just verify-layer1-adapters`",
+            errors,
+        )
+        self.assertIn("pre-push-layer1-ci must not run `just bench-smoke`", errors)
+
+    def test_ci_gate_must_run_app_server_take_effect_tests(self) -> None:
+        justfile = good_justfile().replace(
+            "    RUST_MIN_STACK=16777216 cargo nextest run --no-fail-fast -p "
+            "codex-app-server runtime_registry_fake_backend_fixture\n",
+            "",
+        )
+
+        errors = verify_layer1_ci.validate_layer1_ci(
+            good_hook(),
+            good_workflow(),
+            justfile,
+            hook_executable=True,
+            enforce_executable=True,
+        )
+
+        self.assertIn(
+            "pre-push-layer1-ci must run `-p codex-app-server "
+            "runtime_registry_fake_backend_fixture`",
             errors,
         )
 

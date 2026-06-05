@@ -131,28 +131,19 @@ verify-layer1-adapters:
     $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-memories-write
 
 # GitHub hosted-runner gate for the fork-owned Layer 1 runtime extension branch.
-# This intentionally runs the Layer 1 take-effect tests without the full
-# codex-app-server crate suite, whose sandbox tests need host privileges that
-# ubuntu-24.04 GitHub hosted runners do not provide.
+# Keep this app-server scoped so fork CI does not build extra test/bench
+# profiles or unrelated crates on storage-constrained hosted runners.
 [unix]
 pre-push-layer1-ci:
     just verify-layer1-ci
-    just bazel-lock-check
-    just fmt-check
-    just verify-layer1-adapters
-    just tthw-layer1
-    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-api
-    just bench-smoke
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-app-server layer2_cookbook_examples
+    RUST_MIN_STACK={{ rust_min_stack }} cargo nextest run --no-fail-fast -p codex-app-server runtime_registry_fake_backend_fixture
 
 [windows]
 pre-push-layer1-ci:
     just verify-layer1-ci
-    just bazel-lock-check
-    just fmt-check
-    just verify-layer1-adapters
-    just tthw-layer1
-    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-api
-    just bench-smoke
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-app-server layer2_cookbook_examples
+    $env:RUST_MIN_STACK = "{{ rust_min_stack }}"; cargo nextest run --no-fail-fast -p codex-app-server runtime_registry_fake_backend_fixture
 
 # Push-time gate for the fork-owned Layer 1 runtime extension branch.
 [unix]

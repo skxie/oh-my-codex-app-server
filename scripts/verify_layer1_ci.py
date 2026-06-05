@@ -136,11 +136,30 @@ def validate_layer1_ci(
         errors.append("pre-push-layer1 must run `just bazel-lock-check`")
     if "pre-push-layer1-ci:" not in justfile:
         errors.append("justfile must define `pre-push-layer1-ci`")
-    if (
-        "cargo nextest run --no-fail-fast -p codex-app-server\n"
-        in justfile.partition("pre-push-layer1-ci:")[2].partition("pre-push-layer1:")[0]
-    ):
+    ci_gate = justfile.partition("pre-push-layer1-ci:")[2].partition(
+        "pre-push-layer1:"
+    )[0]
+    if "cargo nextest run --no-fail-fast -p codex-app-server\n" in ci_gate:
         errors.append("pre-push-layer1-ci must not run the full codex-app-server suite")
+    for required in (
+        "-p codex-app-server layer2_cookbook_examples",
+        "-p codex-app-server runtime_registry_fake_backend_fixture",
+    ):
+        if required not in ci_gate:
+            errors.append(f"pre-push-layer1-ci must run `{required}`")
+    for forbidden in (
+        "just verify-layer1-adapters",
+        "just bazel-lock-check",
+        "just fmt-check",
+        "just bench-smoke",
+        "-p codex-api",
+        "-p codex-core",
+        "-p codex-runtime-api",
+        "-p codex-app-server-sdk",
+        "-p codex-memories-write",
+    ):
+        if forbidden in ci_gate:
+            errors.append(f"pre-push-layer1-ci must not run `{forbidden}`")
 
     hook_pattern = extract_hook_path_pattern(hook)
     if hook_pattern is None:
