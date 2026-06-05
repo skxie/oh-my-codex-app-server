@@ -151,7 +151,6 @@ codex-app-server-transport = { path = "app-server-transport" }
 codex-app-server-daemon = { path = "app-server-daemon" }
 codex-app-server-client = { path = "app-server-client" }
 codex-app-server-protocol = { path = "app-server-protocol" }
-codex-app-server-sdk = { path = "app-server-sdk" }
 codex-app-server-test-client = { path = "app-server-test-client" }
 codex-apply-patch = { path = "apply-patch" }
 codex-arg0 = { path = "arg0" }
