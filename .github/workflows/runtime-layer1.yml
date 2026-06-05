@@ -78,10 +78,5 @@ jobs:
         with:
           version: "0.11.3"
 
-      - name: Install Linux sandbox test dependencies
-        run: |
-          sudo apt-get update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bubblewrap
-
-      - name: Run Layer 1 pre-push gate
-        run: just pre-push-layer1
+      - name: Run Layer 1 CI gate
+        run: just pre-push-layer1-ci

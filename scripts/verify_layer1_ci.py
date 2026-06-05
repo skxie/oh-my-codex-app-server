@@ -129,11 +129,18 @@ def validate_layer1_ci(
     if "LAYER1_PRE_PUSH_DRY_RUN" not in hook:
         errors.append(".githooks/pre-push must support LAYER1_PRE_PUSH_DRY_RUN")
 
-    if "run: just pre-push-layer1" not in workflow:
-        errors.append("runtime-layer1.yml must run `just pre-push-layer1`")
+    if "run: just pre-push-layer1-ci" not in workflow:
+        errors.append("runtime-layer1.yml must run `just pre-push-layer1-ci`")
 
     if "just bazel-lock-check" not in justfile:
         errors.append("pre-push-layer1 must run `just bazel-lock-check`")
+    if "pre-push-layer1-ci:" not in justfile:
+        errors.append("justfile must define `pre-push-layer1-ci`")
+    if (
+        "cargo nextest run --no-fail-fast -p codex-app-server\n"
+        in justfile.partition("pre-push-layer1-ci:")[2].partition("pre-push-layer1:")[0]
+    ):
+        errors.append("pre-push-layer1-ci must not run the full codex-app-server suite")
 
     hook_pattern = extract_hook_path_pattern(hook)
     if hook_pattern is None:

@@ -52,13 +52,18 @@ on:
 jobs:
   pre-push-layer1:
     steps:
-      - name: Run Layer 1 pre-push gate
-        run: just pre-push-layer1
+      - name: Run Layer 1 CI gate
+        run: just pre-push-layer1-ci
 """
 
 
 def good_justfile() -> str:
-    return """pre-push-layer1:
+    return """pre-push-layer1-ci:
+    just verify-layer1-ci
+    just bazel-lock-check
+    just fmt-check
+
+pre-push-layer1:
     just verify-layer1-ci
     just bazel-lock-check
     just fmt-check
@@ -137,6 +142,46 @@ class VerifyLayer1CiTests(unittest.TestCase):
 
         self.assertIn(
             "pre-push-layer1 must run `just bazel-lock-check`",
+            errors,
+        )
+
+    def test_workflow_must_run_ci_safe_gate(self) -> None:
+        workflow = good_workflow().replace(
+            "run: just pre-push-layer1-ci", "run: just pre-push-layer1"
+        )
+
+        errors = verify_layer1_ci.validate_layer1_ci(
+            good_hook(),
+            workflow,
+            good_justfile(),
+            hook_executable=True,
+            enforce_executable=True,
+        )
+
+        self.assertIn(
+            "runtime-layer1.yml must run `just pre-push-layer1-ci`",
+            errors,
+        )
+
+    def test_ci_gate_must_not_run_full_app_server_suite(self) -> None:
+        justfile = good_justfile().replace(
+            "pre-push-layer1:\n",
+            (
+                "    RUST_MIN_STACK=16777216 cargo nextest run --no-fail-fast "
+                "-p codex-app-server\n\npre-push-layer1:\n"
+            ),
+        )
+
+        errors = verify_layer1_ci.validate_layer1_ci(
+            good_hook(),
+            good_workflow(),
+            justfile,
+            hook_executable=True,
+            enforce_executable=True,
+        )
+
+        self.assertIn(
+            "pre-push-layer1-ci must not run the full codex-app-server suite",
             errors,
         )
 
