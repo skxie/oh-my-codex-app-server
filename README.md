@@ -88,6 +88,27 @@ insertion, final-context diagnostics, malformed tool-call repair, usage/cache
 metadata normalization, and product-specific backend policy while keeping the
 TUI, desktop, mobile, or web client thin.
 
+## Reasonix-Style Examples
+
+[DeepSeek-Reasonix](https://github.com/esengine/DeepSeek-Reasonix) is a useful
+example of the kind of Layer 2 backend this fork is meant to support. Reasonix
+markets itself around DeepSeek-native behavior such as a cache-first loop,
+provider-aware configuration, MCP-first tools, and long-running terminal
+sessions.
+
+Some of those capabilities are already covered by upstream Codex surfaces:
+clients can talk to app-server over JSON-RPC, external tools can come through
+MCP/plugins, and app-server already owns approval and sandbox semantics. The
+gap is the runtime behavior inside each model turn.
+
+| Reasonix-style capability       | Why upstream app-server alone is not enough                                                                                                                                         | Layer 1 surface added by this fork                                    | What Layer 2 can implement                                                                                                                                 |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cache-first loop                | Upstream app-server owns context/history assembly, but does not expose stable hooks to keep selected prompt prefixes byte-stable for a provider cache strategy.                     | `ContextContributor`, `ContextPolicy`, and `ContextAssemblyObserver`. | Append-only or cache-stable context ordering, memory/retrieval insertion, final-context diagnostics, and provider-specific cache proof.                    |
+| DeepSeek/Claude request shaping | Upstream app-server owns model request construction and transport; clients cannot cleanly swap the provider API envelope from outside.                                              | `ModelRequestAdapter` at request-body level.                          | Build DeepSeek, Claude Messages, Chat Completions, or other provider-shaped request bodies while Codex still owns auth, transport, retries, and streaming. |
+| Tool-call repair                | Upstream tool execution supports MCP/plugins/dynamic tools, but does not expose a backend middleware seam for rewriting malformed tool arguments before approval/sandbox/execution. | `ToolMiddleware` with original/effective call metadata.               | Repair arguments, block unsafe calls, normalize results, and preserve call identity for audit and UI.                                                      |
+| Usage and cache accounting      | Upstream usage is handled inside Codex runtime paths, but provider-specific cache/reasoning fields are not exposed as a stable downstream policy input.                             | `UsageMetadataMapper` and normalized runtime usage fields.            | Track cache hit/miss, cache token savings, reasoning token metadata, and provider-specific cost policy.                                                    |
+| Product-specific harness policy | Upstream clients can drive app-server, but custom backend policy has to live either in the client or in scattered fork patches.                                                     | `RuntimeRegistry` plus `codex-app-server-sdk`.                        | Start a custom in-process app-server backend with one registered implementation for each runtime capability.                                               |
+
 For the detailed SDK path, see
 [Building a Layer 2 app-server with the SDK](./docs/layer2-app-server-sdk.md).
 
