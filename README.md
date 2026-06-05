@@ -12,61 +12,34 @@ behavior belongs in downstream Layer 2 and Layer 3 projects.
 ## Architecture
 
 ```mermaid
-flowchart TD
+flowchart LR
   Upstream["Official openai/codex"]
 
-  subgraph L1["Layer 1: forked Codex app-server foundation"]
+  subgraph L1["Layer 1: this fork"]
     direction TB
+    AppServer["Codex app-server\nthreads / turns / tools / sandbox"]
+    RuntimeRegistry["RuntimeRegistry"]
+    RuntimeApi["codex-runtime-api"]
+    Adapters["runtime adapters"]
 
-    subgraph UpstreamOwned["Mostly upstream-owned code"]
-      AppServer["codex-app-server"]
-      Core["codex-core"]
-      ToolRuntime["ToolRouter / MCP / approval / sandbox"]
-      ModelRuntime["model provider / transport"]
-      ExtensionApi["codex-extension-api"]
-      InProcess["in-process app-server host"]
-    end
-
-    subgraph ForkOwned["Fork-owned rebase firewall"]
-      RuntimeRegistry["RuntimeRegistry"]
-      RuntimeApi["codex-runtime-api boundary types"]
-      Adapters["runtime adapters"]
-    end
-
+    AppServer --> RuntimeRegistry
     RuntimeRegistry --> RuntimeApi
     RuntimeRegistry --> Adapters
-    Adapters --> ModelRuntime
-    Adapters --> ToolRuntime
-    Adapters --> ExtensionApi
-    Adapters --> Core
-    Adapters --> InProcess
-    AppServer --> RuntimeRegistry
-    AppServer --> Core
   end
 
   subgraph L2["Layer 2: custom harness backend"]
-    CustomProvider["DeepSeek / Claude providers"]
-    CustomContext["custom context runtime"]
-    ToolRepair["tool repair / policy middleware"]
     Backend["backend server"]
+    RuntimeImpls["model / context / tool / usage implementations"]
   end
 
   subgraph L3["Layer 3: application clients"]
-    TUI["TUI"]
-    Desktop["Desktop"]
-    Mobile["Mobile"]
-    Web["Web"]
+    Clients["TUI / desktop / mobile / web"]
   end
 
   Upstream -->|"periodic rebase"| L1
-  CustomProvider --> RuntimeRegistry
-  CustomContext --> RuntimeRegistry
-  ToolRepair --> RuntimeRegistry
-  Backend --> RuntimeRegistry
-  TUI --> Backend
-  Desktop --> Backend
-  Mobile --> Backend
-  Web --> Backend
+  RuntimeImpls --> RuntimeRegistry
+  Backend --> RuntimeImpls
+  Clients --> Backend
 ```
 
 Codex app-server remains the owner of thread lifecycle, turn execution,
