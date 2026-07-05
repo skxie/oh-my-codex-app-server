@@ -1634,6 +1634,7 @@ mod tests {
                 response_id,
                 token_usage: None,
                 end_turn: None,
+                ..
             } if response_id == "resp-1"
         );
     }
